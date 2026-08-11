@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>EchoTalk - Panel del presentador</title>
+    <link rel="stylesheet" href="presenter.css" />
+  </head>
+  <body>
+    <main>
+      <h1>EchoTalk <span class="subtitle">Panel del presentador</span></h1>
+
+      <section id="login-screen">
+        <p>Ingresa el PIN que se muestra en la terminal donde corre el servidor.</p>
+        <form id="login-form">
+          <input id="pin-input" type="text" inputmode="numeric" maxlength="6" placeholder="PIN de 6 digitos" autocomplete="off" />
+          <button type="submit">Entrar</button>
+        </form>
+        <p id="login-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="panel-screen" hidden>
+        <p id="status-message" class="status-message" role="status"></p>
+
+        <div class="grid">
+          <div class="card">
+            <h2>Sesion</h2>
+            <label>
+              Idioma de origen (el que hablas)
+              <select id="source-language"></select>
+            </label>
+            <label>
+              Idioma de destino (el que escucha la audiencia)
+              <select id="target-language"></select>
+            </label>
+
+            <div class="button-row">
+              <button id="start-button" type="button">Iniciar</button>
+              <button id="pause-button" type="button" disabled>Pausar</button>
+              <button id="resume-button" type="button" disabled>Reanudar</button>
+              <button id="stop-button" type="button" disabled>Detener</button>
+            </div>
+
+            <dl class="stats">
+              <dt>Estado</dt>
+              <dd id="session-status">Detenida</dd>
+              <dt>Reconocimiento de voz</dt>
+              <dd id="stt-status">-</dd>
+              <dt>Oyentes conectados</dt>
+              <dd id="listener-count">0</dd>
+            </dl>
+          </div>
+
+          <div class="card">
+            <h2>Para la audiencia</h2>
+            <p>Que escaneen este codigo o entren a una de estas URLs desde la misma red WiFi:</p>
+            <img id="qr-image" alt="Codigo QR para unirse" hidden />
+            <ul id="listener-urls"></ul>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2>Transcripcion en vivo</h2>
+          <div id="transcript" class="transcript"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="presenter.js"></script>
+  </body>
+</html>
