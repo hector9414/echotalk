@@ -67,23 +67,6 @@ npm test
 
 Corre la suite (`node:test`, sin dependencias extra) sobre toda la lógica que no requiere credenciales reales de Google Cloud ni un navegador. Se ejecuta automáticamente en cada PR vía GitHub Actions — ver [.github/workflows/ci.yml](./.github/workflows/ci.yml). Detalle de qué cubre en la sección "Tests automatizados" de [SPEC.md](./SPEC.md).
 
-## Correr con Docker
-
-Alternativa a instalar Node localmente:
-
-```bash
-docker build -t echotalk .
-docker run --rm -it \
-  --network host \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/gcp-service-account.json \
-  -v "$(pwd)/gcp-service-account.json:/secrets/gcp-service-account.json:ro" \
-  echotalk
-```
-
-O usa la imagen ya publicada por CI en cada push a la rama principal: `ghcr.io/hector9414/echotalk:latest`.
-
-**Importante sobre redes:** en Linux, corre el contenedor con `--network host` — si no, EchoTalk va a detectar y anunciar la IP interna del contenedor Docker (ej. `172.17.x.x`), que los teléfonos de la audiencia en la red WiFi del lugar no pueden alcanzar. Docker Desktop en Mac/Windows no soporta `--network host` de la misma forma; en esas plataformas es más confiable correr la app directamente con Node (`npm start`) en vez de con Docker.
-
 ## Limitaciones conocidas
 
 Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración real con Microsoft Teams todavía. Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
