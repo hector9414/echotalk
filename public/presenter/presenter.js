@@ -187,14 +187,44 @@
     source.connect(state.workletNode);
   }
 
+  // getUserMedia()/AudioWorklet can fail for several unrelated reasons; a
+  // single generic message for all of them makes the real cause hard to find.
+  function describeAudioPipelineError(err) {
+    console.error('Fallo al preparar la captura de audio:', err);
+    const name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return (
+        'El navegador bloqueó el permiso de micrófono. Haz clic en el ícono de micrófono/candado ' +
+        'en la barra de direcciones, permite el acceso, y vuelve a intentar. Si ya lo habías denegado ' +
+        'antes, el navegador puede dejar de preguntar automáticamente - revisa los ajustes del sitio.'
+      );
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return 'No se detectó ningún micrófono en este equipo. Verifica que haya uno conectado/habilitado.';
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return (
+        'El micrófono está en uso por otra aplicación (Zoom, Teams, otra pestaña, etc.) o no se pudo ' +
+        'iniciar. Cierra lo que lo esté usando e intenta de nuevo.'
+      );
+    }
+    if (name === 'SecurityError') {
+      return (
+        'El navegador bloqueó el micrófono por seguridad. Verifica que la URL sea exactamente ' +
+        'http://localhost:<puerto>/presenter (no una IP, y sin typos en "localhost").'
+      );
+    }
+    return (
+      `No se pudo iniciar la captura de audio (${name || 'error desconocido'}` +
+      `${err && err.message ? ': ' + err.message : ''}). Revisa la consola del navegador (F12) para más detalle.`
+    );
+  }
+
   async function startSession() {
     try {
       await ensureAudioPipeline();
     } catch (err) {
-      setStatusMessage(
-        'No se pudo acceder al microfono. Si abriste esta pagina usando una IP en vez de localhost, ' +
-          'el navegador bloquea el microfono - usa la URL de localhost que se muestra en la terminal.',
-      );
+      setStatusMessage(describeAudioPipelineError(err));
       return;
     }
     setStatusMessage('');
