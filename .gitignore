@@ -146,3 +146,8 @@ vite.config.ts.timestamp-*
 gcp-service-account.json
 *-service-account.json
 *.gcp-key.json
+
+# Binarios/modelos del proveedor local (PROVIDER=local), descargados por
+# scripts/setup-local-provider.sh - nunca se versionan, ver SPEC.md
+# ("Proveedor local") para el porque.
+/local-provider/

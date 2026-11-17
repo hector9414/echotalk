@@ -56,21 +56,27 @@ Para volver a Google, pon `TTS_PROVIDER=google` (o bórralo, es el valor por def
 
 `PROVIDER=local` reemplaza las 3 piezas (reconocimiento de voz, traducción y voz) por un stack que corre en tu propia máquina, sin costo de API — a cambio de subtítulos que aparecen por bloques de ~2 segundos (no palabra por palabra como con Google) y de menor calidad de traducción/voz. Ver "Proveedor local" en [SPEC.md](./SPEC.md) para el detalle completo de esa limitación antes de usarlo en un evento real.
 
-Ninguna de las tres piezas la instala esta app — las corres tú por tu cuenta, igual que el SDK de Google Cloud:
+Ninguna de las tres piezas la instala esta app automáticamente al correr `npm install` — pero sí hay un script que automatiza la descarga/compilación/instalación de las tres (fuera de git, nunca se suben al repo):
 
-1. **STT**: instala [whisper.cpp](https://github.com/ggerganov/whisper.cpp), descarga un modelo (ej. `ggml-base.bin`) y corre su servidor de ejemplo: `./server -m ggml-base.bin --port 8178`.
-2. **Traducción**: instala [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) (`pip install libretranslate`) y corre `libretranslate --port 5000`. La primera vez descarga los paquetes de idioma que necesites.
-3. **Voz**: instala [Piper](https://github.com/OHF-Voice/piper1-gpl) y descarga un archivo de voz `.onnx` por cada idioma de destino que vayas a usar, nombrado como el id del idioma (ej. `es-ES.onnx`, `en-US.onnx`) dentro de una carpeta.
-4. En tu `.env`:
-   ```bash
-   PROVIDER=local
-   LOCAL_STT_URL=http://127.0.0.1:8178
-   LOCAL_TRANSLATE_URL=http://127.0.0.1:5000
-   PIPER_BINARY_PATH=piper
-   PIPER_MODEL_DIR=/ruta/a/tu/carpeta/de/voces
-   ```
-   `TTS_PROVIDER` no necesitas tocarlo: con `PROVIDER=local` ya asume `piper` por defecto (en vez de `google`), para no llamar a la nube sin querer.
-5. Reinicia el servidor (`npm run dev` o `npm start`) con los tres procesos de arriba ya corriendo.
+```bash
+scripts/setup-local-provider.sh
+```
+
+Esto clona y compila whisper.cpp + descarga un modelo (STT), instala LibreTranslate en un venv de Python propio (traducción), e instala Piper + descarga voces para es-ES/en-US/en-GB/fr-FR/de-DE/it-IT/pt-BR (voz) — todo queda en `./local-provider/` (ignorado por git). Al final imprime los 3 comandos exactos para arrancar cada proceso y las variables para tu `.env`. Puedes omitir piezas con `--skip-stt`/`--skip-translate`/`--skip-tts`, o ajustar qué se descarga con las variables `WHISPER_MODEL`, `LT_LANGUAGES` y `PIPER_VOICES` (ver los comentarios al inicio del script). Nota: `es-US`/`ja-JP`/`zh-CN` no tienen una voz de Piper por defecto (no hay certeza de un nombre oficial) — si las necesitas, búscalas en [huggingface.co/rhasspy/piper-voices](https://huggingface.co/rhasspy/piper-voices) y agrégalas a `PIPER_VOICES`.
+
+Si prefieres instalar cada pieza a mano: [whisper.cpp](https://github.com/ggerganov/whisper.cpp) (compilar + `models/download-ggml-model.sh`, correr `build/bin/whisper-server -m <modelo> --port 8178`), [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) (`pip install libretranslate && libretranslate --port 5000`), y [Piper](https://github.com/OHF-Voice/piper1-gpl) (`pip install piper-tts` + un archivo `<languageId>.onnx` + `<languageId>.onnx.json` por idioma, nombrados así, en una carpeta).
+
+Luego, en tu `.env` (el script de arriba ya te imprime esto con las rutas exactas):
+```bash
+PROVIDER=local
+LOCAL_STT_URL=http://127.0.0.1:8178
+LOCAL_TRANSLATE_URL=http://127.0.0.1:5000
+PIPER_BINARY_PATH=/ruta/a/local-provider/piper-venv/bin/piper
+PIPER_MODEL_DIR=/ruta/a/local-provider/piper-voices
+```
+`TTS_PROVIDER` no necesitas tocarlo: con `PROVIDER=local` ya asume `piper` por defecto (en vez de `google`), para no llamar a la nube sin querer.
+
+Con los 3 procesos corriendo, reinicia el servidor (`npm run dev` o `npm start`).
 
 Puedes ajustar `LOCAL_STT_CHUNK_INTERVAL_MS`, `LOCAL_STT_SILENCE_MS` y `LOCAL_STT_SILENCE_RMS_THRESHOLD` en `.env` si el subtítulo tarda demasiado en aparecer o el final de frase se corta a mitad de palabra — depende del micrófono y del ruido ambiente.
 
