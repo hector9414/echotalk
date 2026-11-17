@@ -16,7 +16,7 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 6. **Idioma origen**: fijo, seleccionado por el presentador al iniciar la sesión (sin detección automática, sin cambio en caliente).
 7. **Persistencia**: ninguna. Todo en memoria, sin cuentas, sin base de datos. Reiniciar el servidor borra todo.
 8. **Proveedor de IA**: Google Cloud (Speech-to-Text streaming + Cloud Translation + Text-to-Speech), elegido explícitamente sobre la alternativa gratuita/local tras revisar costos reales (~$2-3 USD/hora en las nubes evaluadas).
-9. **Arquitectura de proveedor**: interfaz intercambiable de motor de voz/traducción (para poder añadir después un proveedor gratuito/local — faster-whisper + LibreTranslate/Argos + Piper, corriendo como procesos locales), pero **se construye e implementa solo el proveedor Google Cloud en esta versión**. Más tarde se agregó ElevenLabs como motor de voz alternativo (ver "Abstracción de proveedor" abajo).
+9. **Arquitectura de proveedor**: interfaz intercambiable de motor de voz/traducción. La v1 construye solo Google Cloud; más tarde se agregó ElevenLabs como motor de voz alternativo, y después un proveedor local/gratis (whisper.cpp + LibreTranslate + Piper, corriendo como procesos que el usuario administra por su cuenta) tras evaluar costo/complejidad — ver "Abstracción de proveedor" y "Proveedor local" abajo. Tiene una limitación real importante: sin streaming nativo, los subtítulos salen por bloques en vez de palabra por palabra.
 10. **HTTPS para el presentador y la audiencia**: agregado para permitir que el presentador use un dispositivo distinto al que corre el servidor (ej. su celular, si esa máquina no tiene micrófono) y, más adelante, para que la audiencia pueda preguntar con su propio micrófono — ver "Hallazgo técnico clave" y "Preguntas del público" abajo.
 11. **Preguntas del público**: un oyente a la vez puede pedir la palabra, hablar en su propio idioma (elegido al unirse) y que su pregunta, ya traducida, le llegue **solo al presentador** (no al resto de la audiencia). El presentador responde normalmente con su propio micrófono, y esa respuesta sí sale por el canal principal a todos como siempre.
 
@@ -43,7 +43,7 @@ Esto tiene dos resoluciones válidas, según en qué dispositivo esté el micró
 
 **Actualización (preguntas del público)**: dado que un oyente también puede usar su propio micrófono para preguntar (ver "Preguntas del público" abajo), la URL de audiencia que se imprime/codifica en el QR ahora es **HTTPS por defecto** (`buildListenerHttpsUrl`), no HTTP — así cualquiera puede preguntar sin tener que cambiar de URL a mitad del evento. Esto significa que todos los oyentes ven la advertencia de certificado una vez al unirse, no solo quien pregunte; se prefirió consistencia sobre evitarle la advertencia a la mayoría que solo escucha. Con `ENABLE_HTTPS=false`, la audiencia vuelve a HTTP plano y nadie (ni el presentador desde otro dispositivo ni el público) puede usar su micrófono — solo queda disponible el presentador por `localhost`.
 
-### Abstracción de proveedor (Google por defecto, ElevenLabs para voz, local a futuro)
+### Abstracción de proveedor (Google por defecto, ElevenLabs para voz, local sin nube)
 
 ```ts
 // src/providers/types.ts
@@ -65,7 +65,7 @@ interface TranslationProvider {
 }
 ```
 
-`src/providers/google/` implementa esta interfaz con las 3 APIs de Google. `src/providers/index.ts` es una factory (`createProvider(name: 'google' | 'local', ttsProviderName: 'google' | 'elevenlabs')`) seleccionada por `PROVIDER` y `TTS_PROVIDER` en `.env`; `'local'` queda **declarada pero no implementada**. El resto del pipeline depende solo de la interfaz, nunca de las clases concretas de un proveedor.
+`src/providers/google/` implementa esta interfaz con las 3 APIs de Google; `src/providers/local/` la implementa con un stack gratis/sin nube (ver "Proveedor local" abajo). `src/providers/index.ts` es una factory (`createProvider(name: 'google' | 'local', ttsProviderName: 'google' | 'elevenlabs' | 'piper')`) seleccionada por `PROVIDER` y `TTS_PROVIDER` en `.env`. El resto del pipeline depende solo de la interfaz, nunca de las clases concretas de un proveedor.
 
 **Voz intercambiable por separado**: `TTS_PROVIDER=elevenlabs` (`src/providers/elevenlabs/tts.ts`) reemplaza solo el `SpeechSynthesizer`, dejando STT y traducción en Google — es la única combinación mixta soportada hoy, porque ElevenLabs es fuerte específicamente en calidad de voz, no en reconocimiento ni traducción. A diferencia de Google (una voz por idioma, vía `LanguageOption.ttsVoiceName`), los modelos multilingües de ElevenLabs infieren el idioma del texto y hablan todos los idiomas configurados con una sola voz (`ELEVENLABS_VOICE_ID`) — por eso `languageCode`/`voiceName` llegan a `ElevenLabsSpeechSynthesizer.synthesize()` pero se ignoran a propósito. Si faltan `ELEVENLABS_API_KEY` o `ELEVENLABS_VOICE_ID` con `TTS_PROVIDER=elevenlabs`, el servidor falla al arrancar con un error explícito en vez de arrancar a medias.
 
@@ -80,6 +80,24 @@ interface TranslationProvider {
 | ElevenLabs Multilingual v2/v3/v4 (máxima calidad) | ~$0.08–0.10 / 1K caracteres | ~$4.00–5.00 |
 
 ElevenLabs sale entre 2.5x y 25x más caro que Google según la voz de Google con la que se compare — el salto de calidad de voz tiene un costo real y creciente con el uso. ElevenLabs también ofrece planes mensuales con créditos incluidos que pueden convenir más que pago-por-uso si se prueba con frecuencia.
+
+### Proveedor local (`PROVIDER=local`): sin nube, $0 de API, pero con peor latencia/calidad
+
+Implementado en `src/providers/local/` tras evaluar el costo/complejidad real (investigación de noviembre 2026, antes de construirlo). Las tres piezas son procesos que **el usuario instala y corre por su cuenta** — esta app nunca los descarga, instala ni administra, igual que nunca instala el SDK de Google Cloud:
+
+- **STT**: un servidor compatible con `whisper.cpp` (`examples/server`, ej. `./server -m ggml-base.bin --port 8178`). `LocalSttStreamManager` le hace `POST /inference` con el audio acumulado como WAV.
+- **Traducción**: un servidor LibreTranslate (`libretranslate --port 5000`). `LocalTranslator` le hace `POST /translate` (`{q, source, target}` → `{translatedText}`).
+- **Voz**: el binario de Piper (ahora mantenido por Open Home Foundation en `OHF-Voice/piper1-gpl`), invocado como subproceso por utterance (`--model <voz>.onnx --output_file -`, texto por stdin, WAV por stdout) — requiere un archivo `<languageId>.onnx` por idioma en `PIPER_MODEL_DIR` (convención de nombre, no autodescarga).
+
+**Por qué no es streaming real (la limitación más importante)**: a diferencia de `streamingRecognize` de Google, los motores basados en Whisper no emiten resultados parciales nativos — transcriben un buffer de audio completo y devuelven un solo resultado. `LocalSttStreamManager` *simula* streaming: acumula el audio de la frase en curso, re-transcribe todo el buffer cada `LOCAL_STT_CHUNK_INTERVAL_MS` (default 2s) como subtítulo "interino", y finaliza (limpia el buffer, dispara traducción+voz) cuando detecta `LOCAL_STT_SILENCE_MS` (default 800ms) de energía por debajo de `LOCAL_STT_SILENCE_RMS_THRESHOLD` vía un cálculo de RMS simple sobre el PCM16 — no hay VAD real, así que el umbral puede necesitar ajuste según el micrófono/ambiente. El resultado: subtítulos que aparecen **por bloques de ~2 segundos**, no palabra por palabra como con Google — una degradación real de la experiencia central de la app, no un detalle cosmético.
+
+**Mapeo de idiomas**: Whisper espera códigos de 2 letras (`en`, `es`) en vez de los códigos BCP-47/Google-específicos de `LANGUAGES` (`en-US`, o `cmn-Hans-CN` para chino) — `toWhisperLanguage()` en `sttStream.ts` deriva el prefijo de 2 letras con una tabla pequeña de excepciones (hoy solo chino). Es una limitación conocida, no una cobertura exhaustiva de todos los códigos especiales de Google.
+
+**Instalación**: `scripts/setup-local-provider.sh` automatiza la descarga/compilación/instalación de las tres piezas (compila whisper.cpp, instala LibreTranslate y Piper en venvs de Python propios, descarga el modelo y las voces) — todo queda en `./local-provider/` (en `.gitignore`, nunca se versiona). Se evaluó incorporar los binarios/modelos directamente al repositorio y se descartó: LibreTranslate no es un binario sino un servicio Python con dependencias de ML, los modelos superan o se acercan al límite de 100MB de GitHub sin Git LFS, y cada modelo/voz tiene su propia licencia de redistribución que habría que auditar una por una.
+
+**Costo real**: $0 en facturación de API, pero el cómputo se traslada a la máquina del presentador — STT es la pieza más pesada (CPU decente o GPU para baja latencia; con solo CPU, los modelos pequeños de Whisper son los únicos cercanos a tiempo real, con menor precisión). Traducción y Piper son livianos, corren bien en CPU. Tampoco hay descarga automática de modelos: Whisper (cientos de MB a ~3GB), paquetes de idioma de LibreTranslate (~50-200MB por par) y voces de Piper (~50-100MB cada una) se instalan aparte, con internet, antes del evento — rompe la promesa de "clona y corre" que sí cumple el proveedor Google.
+
+**Cuándo tiene sentido**: eventos sin internet disponible en el lugar, o cuando el costo de Google (~$2-3 USD/hora) es inaceptable pese a la degradación de calidad. Para la mayoría de casos con internet disponible, Google sigue siendo la opción recomendada — ver la comparación de costos arriba.
 
 ### Pipeline de audio en tiempo real
 
@@ -171,13 +189,18 @@ echotalk/
     pipeline.ts               # orquesta STT -> translate+TTS -> broadcast
     providers/
       types.ts
-      index.ts                # factory createProvider('google'|'local', 'google'|'elevenlabs')
+      index.ts                # factory createProvider('google'|'local', 'google'|'elevenlabs'|'piper')
       google/
         speechStream.ts       # SttStreamManager
         translate.ts
         tts.ts
       elevenlabs/
         tts.ts                # SpeechSynthesizer alterno, seleccionable con TTS_PROVIDER=elevenlabs
+      local/                  # proveedor gratis/sin nube (PROVIDER=local) - ver "Proveedor local"
+        sttStream.ts          # chunking+VAD simple sobre un servidor whisper.cpp (sin streaming nativo)
+        translator.ts         # fetch a un servidor LibreTranslate
+        tts.ts                # subproceso de Piper por utterance
+        wav.ts                # envuelve PCM16 crudo en un header WAV para subirlo al servidor de STT
     ws/
       presenterSocket.ts
       listenerSocket.ts
@@ -193,13 +216,13 @@ echotalk/
 
 ## Fuera de alcance (v1)
 
-Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma **de recepción** por oyente individual (el idioma que cada oyente elige al unirse es solo para si pregunta, no cambia en qué idioma recibe la interpretación principal, que sigue siendo uno solo por sesión) · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente · varias preguntas simultáneas (un piso, un asker a la vez) · que la pregunta traducida llegue a la audiencia (solo al presentador).
+Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma **de recepción** por oyente individual (el idioma que cada oyente elige al unirse es solo para si pregunta, no cambia en qué idioma recibe la interpretación principal, que sigue siendo uno solo por sesión) · integración real con Teams (solo manual, ver README.md) · streaming nativo de STT en el proveedor local (simulado por bloques, ver "Proveedor local") · descarga/instalación automática de los modelos del proveedor local (Whisper/LibreTranslate/Piper - el usuario los instala aparte) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente · varias preguntas simultáneas (un piso, un asker a la vez) · que la pregunta traducida llegue a la audiencia (solo al presentador).
 
 ## Riesgos y limitaciones conocidas
 
 - Palabra pronunciada justo en el instante de un reinicio de stream STT: mitigado con el ring buffer de replay, no eliminado al 100%.
 - Un presentador que hable muy corrido podría generar un segmento cerca del límite de 5.000 bytes por request de TTS — partición defensiva en oraciones si el texto traducido supera ~4.500 bytes.
-- Si el WiFi del lugar pierde salida a internet, todo el pipeline se detiene (se usa Google Cloud, no un proveedor local).
+- Si el WiFi del lugar pierde salida a internet con `PROVIDER=google`, todo el pipeline se detiene. `PROVIDER=local` no depende de internet durante el evento, pero sí durante la instalación inicial (descarga de modelos) y tiene subtítulos por bloques en vez de palabra por palabra - ver "Proveedor local".
 - Aislamiento de clientes en redes WiFi de invitados impediría que los oyentes alcancen el servidor — riesgo de infraestructura del lugar.
 - Un AP doméstico soporta confiablemente ~30-50 clientes; escalar a "un par de cientos" de oyentes requiere un AP de nivel empresarial.
 - iOS Safari puede pausar el audio si el oyente bloquea la pantalla.
@@ -207,9 +230,11 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 
 ## Tests automatizados
 
-`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, la generación del certificado autofirmado (`tls.ts`), el turno único de preguntas (`questionFloor.ts`: conceder/denegar, traducción, liberación), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener y el flujo completo de preguntas del público (conceder/denegar/liberar, también al terminar la sesión) de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
+`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error), de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) y del proveedor local (`local/sttStream.ts`, `local/translator.ts`, `local/tts.ts`, `local/wav.ts` - con `fetch`/subproceso inyectados, incluyendo el chunking+VAD simulado y la cola de un "final" pendiente mientras un "interino" está en vuelo) con un cliente/fetch/proceso falso, la generación del certificado autofirmado (`tls.ts`), el turno único de preguntas (`questionFloor.ts`: conceder/denegar, traducción, liberación), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener y el flujo completo de preguntas del público (conceder/denegar/liberar, también al terminar la sesión) de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs/servidores reales (requiere credenciales, micrófono y/o los procesos locales corriendo) - ambos cubiertos por la verificación manual de abajo.
 
-**Nota de diseño de tests**: los tests de WebSocket que esperan un mensaje de *broadcast* disparado por la acción de OTRO socket deben registrar ese `waitForMessage` **antes** de disparar la acción (guardar la promesa, disparar, luego esperarla) — si el broadcast no tiene ninguna espera asíncrona de por medio en el servidor, puede llegar y perderse antes de que el test esté escuchando, colgando el test indefinidamente en vez de fallar con un timeout. Ver el comentario sobre `waitForMessage` en `app.test.ts`.
+**Notas de diseño de tests**:
+- Los tests de WebSocket que esperan un mensaje de *broadcast* disparado por la acción de OTRO socket deben registrar ese `waitForMessage` **antes** de disparar la acción (guardar la promesa, disparar, luego esperarla) — si el broadcast no tiene ninguna espera asíncrona de por medio en el servidor, puede llegar y perderse antes de que el test esté escuchando, colgando el test indefinidamente en vez de fallar con un timeout. Ver el comentario sobre `waitForMessage` en `app.test.ts`.
+- Cualquier clase de test que arranque un `setInterval`/`setTimeout` propio (ej. `LocalSttStreamManager`) debe llamar su `stop()` dentro de un `finally`, no solo al final feliz del test — si una aserción falla antes de llegar al `stop()`, el temporizador queda vivo para siempre y cuelga **todo el proceso de test**, no solo ese test (mismo síntoma que el bug de arriba: baja carga de CPU, el proceso nunca termina). Ver el helper `withManager()` en `local/sttStream.test.ts`.
 
 ## Verificación end-to-end
 
@@ -225,3 +250,4 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 9. Reconexión de un oyente (modo avión o recarga de pestaña) durante una sesión viva.
 10. PIN incorrecto rechazado sin filtrar información.
 11. **Preguntas del público**: en la vista de oyente, elegir un idioma distinto al de la charla, tocar "Preguntar", conceder el permiso de micrófono (confirma que HTTPS para la audiencia habilita esto), hablar una pregunta corta. Confirmar que: (a) el botón "Preguntar" se deshabilita en los demás oyentes mientras tanto, (b) la pregunta traducida aparece en el panel del presentador y NO en la vista de los demás oyentes, (c) tocar "Terminar pregunta" libera el turno y reactiva el botón para todos, (d) un segundo oyente que intenta preguntar mientras el primero tiene la palabra recibe un mensaje de "otra persona está preguntando".
+12. **Proveedor local** (`PROVIDER=local`): con el servidor whisper.cpp, LibreTranslate y los modelos de Piper corriendo (ver README.md), repetir el paso 4 y confirmar que: (a) el subtítulo "interino" aparece por bloques cada `LOCAL_STT_CHUNK_INTERVAL_MS` en vez de palabra por palabra, (b) el segmento se finaliza al hacer una pausa al hablar (ajustar `LOCAL_STT_SILENCE_RMS_THRESHOLD` si no detecta el silencio o corta a mitad de frase), (c) la traducción y la voz sintetizada igual llegan a los oyentes, con calidad perceptiblemente menor que con Google.

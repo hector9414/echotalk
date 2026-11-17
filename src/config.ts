@@ -16,9 +16,16 @@ export const PROVIDER_NAME = (process.env.PROVIDER ?? 'google') as 'google' | 'l
 export const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID || undefined;
 
 // Voice synthesis can be swapped independently of STT/translation (see
-// src/providers/index.ts) - 'google' (default) reuses the same Google Cloud
-// credentials as STT/Translate; 'elevenlabs' needs the three vars below.
-export const TTS_PROVIDER_NAME = (process.env.TTS_PROVIDER ?? 'google') as 'google' | 'elevenlabs';
+// src/providers/index.ts) - 'google' (default when PROVIDER=google) reuses
+// the same Google Cloud credentials as STT/Translate; 'elevenlabs' needs the
+// three ELEVENLABS_* vars below; 'piper' needs PIPER_MODEL_DIR below. When
+// PROVIDER=local and TTS_PROVIDER isn't set explicitly, it defaults to
+// 'piper' instead of 'google' - otherwise a "fully offline" setup would
+// silently still call Google's cloud TTS.
+export const TTS_PROVIDER_NAME = (process.env.TTS_PROVIDER ?? (PROVIDER_NAME === 'local' ? 'piper' : 'google')) as
+  | 'google'
+  | 'elevenlabs'
+  | 'piper';
 
 export const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || undefined;
 export const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || undefined;
@@ -26,6 +33,41 @@ export const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || undefined;
 // has newer/faster models (flash/turbo variants) - check your dashboard or
 // GET /v1/models for the exact current model_id string before switching.
 export const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
+
+// --- Proveedor local (PROVIDER=local): sin nube, sin costo por uso, pero
+// con calidad/latencia menores - ver "Proveedor local" en SPEC.md. Cada pieza
+// habla por HTTP/subproceso con un servicio que el usuario corre por su
+// cuenta; esta app nunca instala ni administra esos procesos, igual que
+// nunca instala el SDK de Google Cloud.
+
+// Servidor compatible con whisper.cpp (examples/server), ej.
+// `./server -m ggml-base.bin --port 8178`. POST <url>/inference.
+export const LOCAL_STT_URL = process.env.LOCAL_STT_URL || 'http://127.0.0.1:8178';
+
+// Como los motores basados en Whisper no dan resultados parciales nativos
+// (no hay streaming real), este intervalo controla cada cuánto se
+// re-transcribe el audio acumulado para simular un subtítulo "interino".
+export const LOCAL_STT_CHUNK_INTERVAL_MS = Number(process.env.LOCAL_STT_CHUNK_INTERVAL_MS ?? 2000);
+
+// Duración de silencio (ms) antes de considerar que el orador terminó una
+// frase y finalizar el segmento (dispara traducción + voz).
+export const LOCAL_STT_SILENCE_MS = Number(process.env.LOCAL_STT_SILENCE_MS ?? 800);
+
+// Umbral de energía RMS (sobre PCM16, rango 0-32767) por debajo del cual un
+// bloque de audio se considera silencio. Depende del micrófono/ambiente -
+// ajustar si el final de frase tarda demasiado o se corta a mitad de palabra.
+export const LOCAL_STT_SILENCE_RMS_THRESHOLD = Number(process.env.LOCAL_STT_SILENCE_RMS_THRESHOLD ?? 500);
+
+// Servidor LibreTranslate, ej. `libretranslate --port 5000`. POST <url>/translate.
+export const LOCAL_TRANSLATE_URL = process.env.LOCAL_TRANSLATE_URL || 'http://127.0.0.1:5000';
+
+// Binario de Piper (https://github.com/OHF-Voice/piper1-gpl) - por defecto
+// se asume que 'piper' esta en el PATH del sistema.
+export const PIPER_BINARY_PATH = process.env.PIPER_BINARY_PATH || 'piper';
+
+// Carpeta con un archivo <languageId>.onnx (ej. es-ES.onnx, en-US.onnx) por
+// cada idioma de LANGUAGES que se vaya a usar como destino de voz.
+export const PIPER_MODEL_DIR = process.env.PIPER_MODEL_DIR || undefined;
 
 // Google Cloud Speech-to-Text caps a single streaming session at 5 minutes.
 // Restart comfortably before that so the replacement stream is warmed up
