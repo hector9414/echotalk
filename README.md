@@ -9,8 +9,8 @@ Ver [SPEC.md](./SPEC.md) para el diseño técnico completo, el modelo de datos y
 ## Requisitos
 
 - Node.js 20 o superior.
-- Una cuenta de Google Cloud con las APIs **Speech-to-Text**, **Cloud Translation** y **Text-to-Speech** habilitadas, y facturación activa.
-- La laptop que va a correr el servidor y la audiencia deben estar en la misma red WiFi, y esa red debe tener salida a internet (las tres APIs son en la nube).
+- Por defecto (`PROVIDER=google`): una cuenta de Google Cloud con las APIs **Speech-to-Text**, **Cloud Translation** y **Text-to-Speech** habilitadas, y facturación activa. Alternativa sin nube y sin costo de API, con menor calidad: `PROVIDER=local` — ver "Proveedor local" abajo.
+- La laptop que va a correr el servidor y la audiencia deben estar en la misma red WiFi. Con `PROVIDER=google` esa red también debe tener salida a internet (las tres APIs son en la nube); con `PROVIDER=local` no, salvo para instalar los modelos la primera vez.
 
 ## Instalación
 
@@ -51,6 +51,28 @@ Por defecto, la voz que escucha la audiencia también sale de Google Cloud (Text
 Si `TTS_PROVIDER=elevenlabs` y falta `ELEVENLABS_API_KEY` o `ELEVENLABS_VOICE_ID`, el servidor falla al iniciar con un mensaje claro indicando cuál variable falta — no arranca a medias.
 
 Para volver a Google, pon `TTS_PROVIDER=google` (o bórralo, es el valor por defecto) y reinicia.
+
+## Proveedor local (sin nube, gratis, pero con menor calidad)
+
+`PROVIDER=local` reemplaza las 3 piezas (reconocimiento de voz, traducción y voz) por un stack que corre en tu propia máquina, sin costo de API — a cambio de subtítulos que aparecen por bloques de ~2 segundos (no palabra por palabra como con Google) y de menor calidad de traducción/voz. Ver "Proveedor local" en [SPEC.md](./SPEC.md) para el detalle completo de esa limitación antes de usarlo en un evento real.
+
+Ninguna de las tres piezas la instala esta app — las corres tú por tu cuenta, igual que el SDK de Google Cloud:
+
+1. **STT**: instala [whisper.cpp](https://github.com/ggerganov/whisper.cpp), descarga un modelo (ej. `ggml-base.bin`) y corre su servidor de ejemplo: `./server -m ggml-base.bin --port 8178`.
+2. **Traducción**: instala [LibreTranslate](https://github.com/LibreTranslate/LibreTranslate) (`pip install libretranslate`) y corre `libretranslate --port 5000`. La primera vez descarga los paquetes de idioma que necesites.
+3. **Voz**: instala [Piper](https://github.com/OHF-Voice/piper1-gpl) y descarga un archivo de voz `.onnx` por cada idioma de destino que vayas a usar, nombrado como el id del idioma (ej. `es-ES.onnx`, `en-US.onnx`) dentro de una carpeta.
+4. En tu `.env`:
+   ```bash
+   PROVIDER=local
+   LOCAL_STT_URL=http://127.0.0.1:8178
+   LOCAL_TRANSLATE_URL=http://127.0.0.1:5000
+   PIPER_BINARY_PATH=piper
+   PIPER_MODEL_DIR=/ruta/a/tu/carpeta/de/voces
+   ```
+   `TTS_PROVIDER` no necesitas tocarlo: con `PROVIDER=local` ya asume `piper` por defecto (en vez de `google`), para no llamar a la nube sin querer.
+5. Reinicia el servidor (`npm run dev` o `npm start`) con los tres procesos de arriba ya corriendo.
+
+Puedes ajustar `LOCAL_STT_CHUNK_INTERVAL_MS`, `LOCAL_STT_SILENCE_MS` y `LOCAL_STT_SILENCE_RMS_THRESHOLD` en `.env` si el subtítulo tarda demasiado en aparecer o el final de frase se corta a mitad de palabra — depende del micrófono y del ruido ambiente.
 
 ## Correr la app
 
@@ -125,4 +147,4 @@ Corre la suite (`node:test`, sin dependencias extra) sobre toda la lógica que n
 
 ## Limitaciones conocidas
 
-Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración nativa con Microsoft Teams (solo enrutamiento manual de audio, ver arriba). Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
+Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración nativa con Microsoft Teams (solo enrutamiento manual de audio, ver arriba). El proveedor local (`PROVIDER=local`) no da subtítulos palabra por palabra como Google, sino por bloques de ~2 segundos. Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
