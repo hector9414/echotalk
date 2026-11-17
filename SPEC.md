@@ -26,13 +26,20 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 - **WebSockets**: librería `ws` (no Socket.IO) — no hay necesidad de escalar a múltiples instancias ni de fallback a long-polling en una LAN con navegadores modernos, y `ws` entrega los frames binarios de audio del micrófono sin overhead de serialización. Dos endpoints sobre el mismo `http.Server`: `/ws/presenter` (control JSON + audio binario mezclado) y `/ws/listen` (broadcast a oyentes).
 - **Frontend**: HTML/CSS/JS plano servido como estático — solo 2 pantallas (panel del presentador y vista del oyente), sin framework/bundler.
 - **Mismo origen**: presentador y oyentes se sirven desde el mismo Express, sin CORS.
-- **Sin HTTPS en v1** (decisión deliberada — ver "Contexto seguro" abajo).
+- **HTTP para oyentes, HTTPS opcional (autofirmado) para el presentador** desde otro dispositivo — ver "Contexto seguro" abajo. Sin HTTPS para exponer la app fuera de la LAN; sigue siendo una app de red local.
 - **SDKs de Google**: `@google-cloud/speech` (v1, streaming), `@google-cloud/translate` (v2 Basic), `@google-cloud/text-to-speech`.
 - **Utilidades**: `qrcode`, `dotenv`. `crypto.randomUUID()`/`crypto.randomInt()` nativos de Node.
 
 ### Hallazgo técnico clave: contexto seguro del navegador
 
-`getUserMedia` (captura de micrófono) solo funciona en HTTPS o en el caso especial de `localhost`/`127.0.0.1` — una IP LAN por HTTP plano no califica. Como el presentador siempre está en la misma laptop que corre el servidor, **el panel del presentador se abre siempre vía `http://localhost:<puerto>/presenter`**, nunca vía la IP LAN. El servidor imprime esa URL de presentador por separado de la URL LAN de oyentes.
+`getUserMedia` (captura de micrófono) solo funciona en HTTPS o en el caso especial de `localhost`/`127.0.0.1` — una IP LAN por HTTP plano no califica.
+
+Esto tiene dos resoluciones válidas, según en qué dispositivo esté el micrófono real:
+
+1. **El presentador usa la misma laptop que corre el servidor**: abre el panel vía `http://localhost:<puerto>/presenter` (HTTP plano, sin advertencias). Esto es lo más simple cuando aplica.
+2. **El presentador usa OTRO dispositivo** (ej. su celular, porque la máquina del servidor no tiene micrófono): `localhost` no es alcanzable desde otro dispositivo, así que se necesita HTTPS real. El servidor levanta un segundo listener HTTPS (`src/tls.ts` + `ENABLE_HTTPS`/`HTTPS_PORT`, activado por defecto) con un **certificado autofirmado generado en memoria en cada arranque** (nunca se escribe a disco), con SAN cubriendo `localhost`, `127.0.0.1` y cada IP LAN detectada. El navegador muestra una advertencia de "conexión no privada" (esperada e inevitable para un certificado no emitido por una autoridad reconocida) que el presentador acepta una vez; después de eso, HTTPS cuenta como contexto seguro y el micrófono del otro dispositivo funciona con normalidad.
+
+Los oyentes siguen usando HTTP plano siempre (puerto `PORT`) — no tiene sentido exponerlos a la advertencia de certificado solo para ver subtítulos y escuchar audio, que no requieren contexto seguro.
 
 ### Abstracción de proveedor (Google por defecto, ElevenLabs para voz, local a futuro)
 
@@ -98,7 +105,7 @@ PIN numérico de 6 dígitos generado al arrancar el servidor (solo visible en la
 
 ### Descubribilidad para la audiencia
 
-Al arrancar, el servidor imprime todas las IPs LAN detectadas + genera un QR apuntando a `http://<ip-lan>:<puerto>/`. La URL del presentador (`http://localhost:<puerto>/presenter`) se muestra por separado.
+Al arrancar, el servidor imprime todas las IPs LAN detectadas + genera un QR apuntando a `http://<ip-lan>:<puerto>/`. La URL del presentador por `localhost` se muestra por separado, junto con la(s) URL(s) HTTPS (`https://<ip-lan>:<puerto-https>/presenter`) para cuando el presentador va a usar otro dispositivo (ver "Hallazgo técnico clave" arriba).
 
 ## Modelo de datos y CRUD por entidad
 
@@ -163,6 +170,7 @@ echotalk/
       listenerSocket.ts
     routes.ts
     network.ts
+    tls.ts                    # genera el certificado autofirmado para el servidor HTTPS
   public/
     presenter/  {index.html, presenter.css, presenter.js}
     listen/     {index.html, listen.css, listen.js}
@@ -171,7 +179,7 @@ echotalk/
 
 ## Fuera de alcance (v1)
 
-Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma por oyente individual · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · HTTPS/acceso remoto fuera de la LAN · cambio de idioma en caliente.
+Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma por oyente individual · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente.
 
 ## Riesgos y limitaciones conocidas
 
@@ -185,13 +193,14 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 
 ## Tests automatizados
 
-`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener de punta a punta. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
+`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, la generación del certificado autofirmado (`tls.ts`), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
 
 ## Verificación end-to-end
 
 1. Habilitar en el proyecto de Google Cloud: Speech-to-Text, Cloud Translation, Text-to-Speech. Autenticar localmente (`gcloud auth application-default login` o service account + `GOOGLE_APPLICATION_CREDENTIALS`).
 2. `npm install` → `npm run dev` → confirmar que la terminal imprime PIN, URL de presentador (`localhost`) y URL(es) LAN de oyentes + QR.
-3. Abrir el panel vía `localhost`, ingresar PIN, elegir idiomas (default es-ES→en-US), iniciar sesión, conceder permiso de mic. Confirmar que abrir el panel vía la IP LAN falla el permiso de micrófono.
+3. Abrir el panel vía `localhost`, ingresar PIN, elegir idiomas (default es-ES→en-US), iniciar sesión, conceder permiso de mic. Confirmar que abrir el panel vía la IP LAN **por HTTP** falla el permiso de micrófono.
+3b. Probar el flujo de "presentador en otro dispositivo": desde un celular en la misma WiFi, abrir la URL `https://<ip-lan>:<puerto-https>/presenter`, aceptar la advertencia de certificado autofirmado, ingresar el PIN y confirmar que el micrófono del celular sí funciona (a diferencia del paso 3, aquí SÍ debe pedir/conceder permiso con normalidad por ser HTTPS).
 4. Desde un segundo dispositivo en la misma WiFi: escanear el QR, tocar "Unirme", hablar frente al mic del presentador. Confirmar indicador interino, subtítulo final traducido, audio reproducido, segmentos en orden.
 5. Confirmar que el contador de oyentes sube/baja al conectar/desconectar dispositivos.
 6. Sesión larga (10-15+ min) para cruzar 2-3 reinicios de stream STT; confirmar que no hay corte perceptible.

@@ -61,15 +61,30 @@ npm run dev
 La terminal va a imprimir:
 
 - Un **PIN** de 6 dígitos (solo se muestra aquí, no lo compartas con la audiencia).
-- La URL del **panel del presentador** (`http://localhost:<puerto>/presenter`).
+- La URL del **panel del presentador** por `localhost` (`http://localhost:<puerto>/presenter`) — úsala si ESTA máquina tiene micrófono.
+- La URL **HTTPS** del panel del presentador (`https://<ip-lan>:<puerto-https>/presenter`) — úsala si vas a presentar desde **otro dispositivo** (ver abajo).
 - La(s) URL(s) de **oyentes** en la red LAN, más un código QR.
 
 ## Cómo usarla
 
-1. En la laptop que va a presentar, abre la URL del presentador **por `localhost`** (no por la IP LAN — el navegador bloquea el micrófono fuera de `localhost` sin HTTPS). Ingresa el PIN.
+1. Abre el panel del presentador con la URL que corresponda (ver "Usar el celular como presentador" si esta máquina no tiene micrófono). Ingresa el PIN.
 2. Elige el idioma de origen (el que va a hablar el orador) y el idioma de destino (el que va a recibir la audiencia), y presiona "Iniciar".
 3. La audiencia escanea el QR (o entra a la URL LAN mostrada) desde su navegador y toca "Unirme".
 4. Puedes **pausar** la interpretación (ej. para un receso o preguntas) sin perder la sesión ni desconectar a los oyentes, y **reanudar** cuando sigas. "Detener" sí termina la sesión por completo.
+
+## Usar el celular (u otro dispositivo) como presentador
+
+Si la máquina que corre el servidor **no tiene micrófono** (ej. un PC de escritorio), el presentador puede usar su celular en su lugar — el micrófono real siempre es el del dispositivo donde se abre el panel, nunca el de la máquina que corre el servidor.
+
+El navegador exige un "contexto seguro" (HTTPS, o `localhost`) para dar acceso al micrófono; una IP de LAN por HTTP plano no sirve. Por eso el servidor también levanta un puerto HTTPS (activado por defecto, ver `ENABLE_HTTPS`/`HTTPS_PORT` en `.env.example`) con un certificado autofirmado generado automáticamente en cada arranque — no requiere ninguna configuración de tu parte.
+
+Pasos:
+1. Conecta tu celular a la **misma red WiFi** que la máquina del servidor.
+2. En el celular, abre la URL `https://...` que aparece en la terminal (no la URL `http://` de los oyentes).
+3. El navegador va a mostrar una advertencia de **"conexión no privada"** — es esperado, el certificado es autofirmado (no lo emite una autoridad reconocida, pero sigue siendo una conexión cifrada). Toca "Avanzado" → "Continuar de todas formas" (el texto exacto varía según el navegador).
+4. Ingresa el PIN y continúa normalmente — el micrófono del celular es el que va a capturar al orador.
+
+Si prefieres desactivar esto (por ejemplo, porque siempre vas a presentar desde la misma laptop que corre el servidor), pon `ENABLE_HTTPS=false` en `.env`.
 
 ## Build de producción
 

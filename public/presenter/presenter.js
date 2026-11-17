@@ -210,8 +210,10 @@
     }
     if (name === 'SecurityError') {
       return (
-        'El navegador bloqueó el micrófono por seguridad. Verifica que la URL sea exactamente ' +
-        'http://localhost:<puerto>/presenter (no una IP, y sin typos en "localhost").'
+        'El navegador bloqueó el micrófono por seguridad. Si estás en la misma máquina que corre el ' +
+        'servidor, usa exactamente http://localhost:<puerto>/presenter (no una IP). Si estás en otro ' +
+        'dispositivo (ej. tu celular), usa la URL https:// que se muestra en la terminal del servidor, ' +
+        'no la URL http:// de los oyentes.'
       );
     }
     return (

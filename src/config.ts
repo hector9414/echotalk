@@ -3,6 +3,14 @@ import type { LanguageOption } from './types';
 
 export const PORT = Number(process.env.PORT ?? 3000);
 
+// HTTPS is on by default: it's what lets a phone act as the presenter (its
+// own mic) when the machine running the server has none, since getUserMedia
+// needs a secure context and a LAN IP over plain HTTP never qualifies - see
+// src/tls.ts. Listeners keep using plain HTTP on PORT (no certificate
+// warning for the audience). Set ENABLE_HTTPS=false to turn it off entirely.
+export const ENABLE_HTTPS = process.env.ENABLE_HTTPS !== 'false';
+export const HTTPS_PORT = Number(process.env.HTTPS_PORT ?? 3443);
+
 export const PROVIDER_NAME = (process.env.PROVIDER ?? 'google') as 'google' | 'local';
 
 export const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID || undefined;
