@@ -34,7 +34,7 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 
 `getUserMedia` (captura de micrófono) solo funciona en HTTPS o en el caso especial de `localhost`/`127.0.0.1` — una IP LAN por HTTP plano no califica. Como el presentador siempre está en la misma laptop que corre el servidor, **el panel del presentador se abre siempre vía `http://localhost:<puerto>/presenter`**, nunca vía la IP LAN. El servidor imprime esa URL de presentador por separado de la URL LAN de oyentes.
 
-### Abstracción de proveedor (Google ahora, local a futuro)
+### Abstracción de proveedor (Google por defecto, ElevenLabs para voz, local a futuro)
 
 ```ts
 // src/providers/types.ts
@@ -56,7 +56,21 @@ interface TranslationProvider {
 }
 ```
 
-`src/providers/google/` implementa esta interfaz con las 3 APIs de Google. `src/providers/index.ts` es una factory (`createProvider(name: 'google' | 'local')`) seleccionada por `PROVIDER` en `.env`; `'local'` queda **declarada pero no implementada**. El resto del pipeline depende solo de la interfaz, nunca de las clases concretas de Google.
+`src/providers/google/` implementa esta interfaz con las 3 APIs de Google. `src/providers/index.ts` es una factory (`createProvider(name: 'google' | 'local', ttsProviderName: 'google' | 'elevenlabs')`) seleccionada por `PROVIDER` y `TTS_PROVIDER` en `.env`; `'local'` queda **declarada pero no implementada**. El resto del pipeline depende solo de la interfaz, nunca de las clases concretas de un proveedor.
+
+**Voz intercambiable por separado**: `TTS_PROVIDER=elevenlabs` (`src/providers/elevenlabs/tts.ts`) reemplaza solo el `SpeechSynthesizer`, dejando STT y traducción en Google — es la única combinación mixta soportada hoy, porque ElevenLabs es fuerte específicamente en calidad de voz, no en reconocimiento ni traducción. A diferencia de Google (una voz por idioma, vía `LanguageOption.ttsVoiceName`), los modelos multilingües de ElevenLabs infieren el idioma del texto y hablan todos los idiomas configurados con una sola voz (`ELEVENLABS_VOICE_ID`) — por eso `languageCode`/`voiceName` llegan a `ElevenLabsSpeechSynthesizer.synthesize()` pero se ignoran a propósito. Si faltan `ELEVENLABS_API_KEY` o `ELEVENLABS_VOICE_ID` con `TTS_PROVIDER=elevenlabs`, el servidor falla al arrancar con un error explícito en vez de arrancar a medias.
+
+**Comparación de costo de voz** (~50.000 caracteres/hora, estimado de habla continua traducida; precios de noviembre 2026, confirmar antes de decidir ya que varían con frecuencia):
+
+| Motor | Precio | Costo/hora aprox. |
+|---|---|---|
+| Google Standard/WaveNet (el que usa esta app sin configurar nada) | $4 / 1M caracteres | $0.20 |
+| Google Neural2 | $16 / 1M caracteres | $0.80 |
+| Google Chirp 3: HD | $30 / 1M caracteres | $1.50 |
+| ElevenLabs Flash/Turbo (modelo rápido) | ~$0.04 / 1K caracteres | ~$2.00 |
+| ElevenLabs Multilingual v2/v3/v4 (máxima calidad) | ~$0.08–0.10 / 1K caracteres | ~$4.00–5.00 |
+
+ElevenLabs sale entre 2.5x y 25x más caro que Google según la voz de Google con la que se compare — el salto de calidad de voz tiene un costo real y creciente con el uso. ElevenLabs también ofrece planes mensuales con créditos incluidos que pueden convenir más que pago-por-uso si se prueba con frecuencia.
 
 ### Pipeline de audio en tiempo real
 
@@ -137,11 +151,13 @@ echotalk/
     pipeline.ts               # orquesta STT -> translate+TTS -> broadcast
     providers/
       types.ts
-      index.ts                # factory createProvider('google'|'local')
+      index.ts                # factory createProvider('google'|'local', 'google'|'elevenlabs')
       google/
         speechStream.ts       # SttStreamManager
         translate.ts
         tts.ts
+      elevenlabs/
+        tts.ts                # SpeechSynthesizer alterno, seleccionable con TTS_PROVIDER=elevenlabs
     ws/
       presenterSocket.ts
       listenerSocket.ts
@@ -169,7 +185,7 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 
 ## Tests automatizados
 
-`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales de Google Cloud ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) con un cliente inyectado falso, las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener de punta a punta. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra Google Cloud (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
+`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener de punta a punta. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
 
 ## Verificación end-to-end
 

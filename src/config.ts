@@ -7,6 +7,18 @@ export const PROVIDER_NAME = (process.env.PROVIDER ?? 'google') as 'google' | 'l
 
 export const GOOGLE_CLOUD_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT_ID || undefined;
 
+// Voice synthesis can be swapped independently of STT/translation (see
+// src/providers/index.ts) - 'google' (default) reuses the same Google Cloud
+// credentials as STT/Translate; 'elevenlabs' needs the three vars below.
+export const TTS_PROVIDER_NAME = (process.env.TTS_PROVIDER ?? 'google') as 'google' | 'elevenlabs';
+
+export const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY || undefined;
+export const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || undefined;
+// eleven_multilingual_v2 is the long-stable multilingual model id; ElevenLabs
+// has newer/faster models (flash/turbo variants) - check your dashboard or
+// GET /v1/models for the exact current model_id string before switching.
+export const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
+
 // Google Cloud Speech-to-Text caps a single streaming session at 5 minutes.
 // Restart comfortably before that so the replacement stream is warmed up
 // (via the replay buffer) before the old one would be cut off.

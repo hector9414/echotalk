@@ -1,4 +1,4 @@
-import { PORT, PROVIDER_NAME } from './config';
+import { PORT, PROVIDER_NAME, TTS_PROVIDER_NAME } from './config';
 import { createProvider } from './providers';
 import { buildApp } from './app';
 import type { NetworkInfo } from './routes';
@@ -11,7 +11,7 @@ import {
 } from './network';
 
 async function main(): Promise<void> {
-  const provider = createProvider(PROVIDER_NAME);
+  const provider = createProvider(PROVIDER_NAME, TTS_PROVIDER_NAME);
 
   const lanIps = getLanIpAddresses();
   const listenerUrls = lanIps.map((ip) => buildListenerUrl(ip, PORT));
@@ -28,6 +28,7 @@ async function main(): Promise<void> {
     console.log('');
     console.log('=== EchoTalk ===');
     console.log(`PIN del presentador (no lo compartas con la audiencia): ${auth.pin}`);
+    console.log(`Motor de voz (TTS): ${TTS_PROVIDER_NAME}`);
     console.log(`Panel del presentador (abrir SIEMPRE por localhost): ${presenterUrl}`);
     if (listenerUrls.length === 0) {
       console.log('No se detecto ninguna IP de red local. Conecta esta maquina a WiFi/Ethernet.');

@@ -33,6 +33,25 @@ Dos opciones:
 
 2. **Cuenta de servicio**: crea una cuenta de servicio en la consola de Google Cloud con los roles de Speech-to-Text, Cloud Translation y Text-to-Speech, descarga el JSON de credenciales, guárdalo como `gcp-service-account.json` en la raíz del proyecto (ya está en `.gitignore`, nunca lo subas al repo) y apunta `GOOGLE_APPLICATION_CREDENTIALS` a esa ruta.
 
+## Usar ElevenLabs para la voz (opcional)
+
+Por defecto, la voz que escucha la audiencia también sale de Google Cloud (Text-to-Speech). Si quieres probar la voz de **ElevenLabs** en su lugar (mejor calidad, más costosa — ver comparación de costos en [SPEC.md](./SPEC.md)), el reconocimiento de voz y la traducción **siguen siendo de Google**; solo se cambia la narración:
+
+1. Crea una cuenta en [elevenlabs.io](https://elevenlabs.io) y copia tu API key desde la pestaña **Profile** (o Settings → API Keys).
+2. Elige una voz en la pestaña **Voices** del dashboard y copia su `voice_id` (o consíguelo vía `GET /v1/voices`).
+3. En tu `.env`, configura:
+   ```bash
+   TTS_PROVIDER=elevenlabs
+   ELEVENLABS_API_KEY=tu_api_key_aqui
+   ELEVENLABS_VOICE_ID=el_voice_id_que_copiaste
+   ELEVENLABS_MODEL_ID=eleven_multilingual_v2   # o el modelo que prefieras
+   ```
+4. Reinicia el servidor (`npm run dev` o `npm start`). La terminal va a mostrar `Motor de voz (TTS): elevenlabs` en el banner de arranque, confirmando que está activo.
+
+Si `TTS_PROVIDER=elevenlabs` y falta `ELEVENLABS_API_KEY` o `ELEVENLABS_VOICE_ID`, el servidor falla al iniciar con un mensaje claro indicando cuál variable falta — no arranca a medias.
+
+Para volver a Google, pon `TTS_PROVIDER=google` (o bórralo, es el valor por defecto) y reinicia.
+
 ## Correr la app
 
 ```bash
