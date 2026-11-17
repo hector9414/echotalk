@@ -11,6 +11,10 @@
       <section id="join-screen">
         <h1>EchoTalk</h1>
         <p>Vas a escuchar la traducción en vivo de esta charla, con subtítulos y audio.</p>
+        <label class="language-label" for="my-language">
+          Tu idioma (por si quieres preguntar con tu micrófono)
+          <select id="my-language"></select>
+        </label>
         <button id="join-button" type="button">Unirme</button>
       </section>
 
@@ -19,6 +23,12 @@
         <div id="captions" class="captions"></div>
         <button id="resume-audio" type="button" hidden>Toca para escuchar</button>
         <audio id="player" playsinline></audio>
+
+        <div id="question-panel" class="question-panel">
+          <button id="ask-button" type="button">🎤 Preguntar</button>
+          <button id="end-question-button" type="button" hidden>Terminar pregunta</button>
+          <p id="question-status" class="question-status" role="status"></p>
+        </div>
       </section>
     </main>
     <script src="listen.js"></script>

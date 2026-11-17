@@ -63,13 +63,13 @@ La terminal va a imprimir:
 - Un **PIN** de 6 dígitos (solo se muestra aquí, no lo compartas con la audiencia).
 - La URL del **panel del presentador** por `localhost` (`http://localhost:<puerto>/presenter`) — úsala si ESTA máquina tiene micrófono.
 - La URL **HTTPS** del panel del presentador (`https://<ip-lan>:<puerto-https>/presenter`) — úsala si vas a presentar desde **otro dispositivo** (ver abajo).
-- La(s) URL(s) de **oyentes** en la red LAN, más un código QR.
+- La(s) URL(s) de **oyentes** en la red LAN (HTTPS por defecto — ver "Preguntas del público"), más un código QR.
 
 ## Cómo usarla
 
 1. Abre el panel del presentador con la URL que corresponda (ver "Usar el celular como presentador" si esta máquina no tiene micrófono). Ingresa el PIN.
 2. Elige el idioma de origen (el que va a hablar el orador) y el idioma de destino (el que va a recibir la audiencia), y presiona "Iniciar".
-3. La audiencia escanea el QR (o entra a la URL LAN mostrada) desde su navegador y toca "Unirme".
+3. La audiencia escanea el QR (o entra a la URL mostrada) desde su navegador, acepta la advertencia de certificado (una vez), elige su propio idioma (por si quiere preguntar) y toca "Unirme".
 4. Puedes **pausar** la interpretación (ej. para un receso o preguntas) sin perder la sesión ni desconectar a los oyentes, y **reanudar** cuando sigas. "Detener" sí termina la sesión por completo.
 
 ## Usar el celular (u otro dispositivo) como presentador
@@ -85,6 +85,28 @@ Pasos:
 4. Ingresa el PIN y continúa normalmente — el micrófono del celular es el que va a capturar al orador.
 
 Si prefieres desactivar esto (por ejemplo, porque siempre vas a presentar desde la misma laptop que corre el servidor), pon `ENABLE_HTTPS=false` en `.env`.
+
+## Preguntas del público
+
+La audiencia también puede preguntar, con su propia voz, usando su idioma nativo:
+
+1. Al "Unirme", cada oyente elige su idioma en una lista — es el idioma en el que va a hablar si pregunta (no tiene que coincidir con el idioma de destino de la interpretación).
+2. Cualquier oyente puede tocar **"Preguntar"**. Si nadie más está preguntando, el navegador le pide permiso de micrófono y empieza a grabar.
+3. Mientras alguien tiene la palabra, el botón "Preguntar" se deshabilita para el resto de la audiencia (solo una persona puede preguntar a la vez).
+4. Al tocar **"Terminar"** (o automáticamente, si la sesión se detiene), el texto final de la pregunta se traduce al idioma del presentador y se muestra **únicamente en el panel del presentador** — el resto de la audiencia no la ve ni la escucha.
+
+Por eso ahora **toda la audiencia** entra por HTTPS desde el inicio (antes solo era necesario para presentar desde otro dispositivo): cualquiera podría necesitar su micrófono para preguntar, así que todos aceptan la advertencia de certificado al unirse.
+
+## Integración con Microsoft Teams (manual)
+
+No hay una integración nativa con Teams todavía (ver "Fuera de alcance" en [SPEC.md](./SPEC.md)). La forma de usarlo hoy es enrutando el audio a nivel de sistema operativo:
+
+1. Instala [VB-CABLE](https://vb-audio.com/Cable/) (u otro cable de audio virtual) en la máquina que corre el servidor.
+2. En el navegador donde está abierto el panel de **oyente** (el que recibe la voz traducida), selecciona el dispositivo de salida de audio "CABLE Input" en vez de tus parlantes.
+3. En Teams, en Configuración → Dispositivos, selecciona "CABLE Output" como micrófono.
+4. Así, lo que EchoTalk reproduce como voz traducida entra a Teams como si fuera tu micrófono. Para escuchar tú mismo mientras tanto, herramientas como [Voicemeeter](https://vb-audio.com/Voicemeeter/) permiten mezclar "CABLE Output" con tus parlantes reales.
+
+Es una solución manual de enrutamiento de audio del sistema operativo, no una integración de EchoTalk con la API de Teams.
 
 ## Build de producción
 
@@ -103,4 +125,4 @@ Corre la suite (`node:test`, sin dependencias extra) sobre toda la lógica que n
 
 ## Limitaciones conocidas
 
-Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración real con Microsoft Teams todavía. Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
+Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración nativa con Microsoft Teams (solo enrutamiento manual de audio, ver arriba). Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.

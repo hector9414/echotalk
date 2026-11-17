@@ -66,7 +66,9 @@ export function buildApp(provider: TranslationProvider, networkInfo: NetworkInfo
   const sessionManager = new SessionManager();
 
   const presenterHub = new PresenterHub();
-  const listenerHub = new ListenerHub(sessionManager);
+  const listenerHub = new ListenerHub(sessionManager, provider, {
+    onAudienceQuestion: (question) => presenterHub.broadcast({ type: 'audience_question', question }),
+  });
 
   sessionManager.onSessionChange((session) => {
     presenterHub.broadcast({ type: 'session_state', session });

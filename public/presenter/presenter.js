@@ -72,6 +72,9 @@
       case 'stt_status':
         el('stt-status').textContent = STT_STATUS_LABEL[message.status] || message.status;
         break;
+      case 'audience_question':
+        renderAudienceQuestion(message.question);
+        break;
       case 'error':
         setStatusMessage(`Error: ${message.message}`);
         break;
@@ -93,6 +96,7 @@
 
     if (session.status === 'idle') {
       el('transcript').innerHTML = '';
+      el('questions').innerHTML = '';
     }
 
     if (state.audioContext) {
@@ -126,6 +130,24 @@
       translated.textContent = segment.translatedText;
     }
 
+    list.scrollTop = list.scrollHeight;
+    while (list.children.length > 50) {
+      list.removeChild(list.firstChild);
+    }
+  }
+
+  function renderAudienceQuestion(question) {
+    const list = el('questions');
+    const line = document.createElement('div');
+    line.className = 'transcript-line final';
+    line.textContent = `(${question.sourceLanguageLabel}) ${question.sourceText}`;
+
+    const translated = document.createElement('span');
+    translated.className = 'translated';
+    translated.textContent = question.translatedText;
+    line.appendChild(translated);
+
+    list.appendChild(line);
     list.scrollTop = list.scrollHeight;
     while (list.children.length > 50) {
       list.removeChild(list.firstChild);

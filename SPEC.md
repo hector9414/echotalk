@@ -16,7 +16,9 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 6. **Idioma origen**: fijo, seleccionado por el presentador al iniciar la sesión (sin detección automática, sin cambio en caliente).
 7. **Persistencia**: ninguna. Todo en memoria, sin cuentas, sin base de datos. Reiniciar el servidor borra todo.
 8. **Proveedor de IA**: Google Cloud (Speech-to-Text streaming + Cloud Translation + Text-to-Speech), elegido explícitamente sobre la alternativa gratuita/local tras revisar costos reales (~$2-3 USD/hora en las nubes evaluadas).
-9. **Arquitectura de proveedor**: interfaz intercambiable de motor de voz/traducción (para poder añadir después un proveedor gratuito/local — faster-whisper + LibreTranslate/Argos + Piper, corriendo como procesos locales), pero **se construye e implementa solo el proveedor Google Cloud en esta versión**.
+9. **Arquitectura de proveedor**: interfaz intercambiable de motor de voz/traducción (para poder añadir después un proveedor gratuito/local — faster-whisper + LibreTranslate/Argos + Piper, corriendo como procesos locales), pero **se construye e implementa solo el proveedor Google Cloud en esta versión**. Más tarde se agregó ElevenLabs como motor de voz alternativo (ver "Abstracción de proveedor" abajo).
+10. **HTTPS para el presentador y la audiencia**: agregado para permitir que el presentador use un dispositivo distinto al que corre el servidor (ej. su celular, si esa máquina no tiene micrófono) y, más adelante, para que la audiencia pueda preguntar con su propio micrófono — ver "Hallazgo técnico clave" y "Preguntas del público" abajo.
+11. **Preguntas del público**: un oyente a la vez puede pedir la palabra, hablar en su propio idioma (elegido al unirse) y que su pregunta, ya traducida, le llegue **solo al presentador** (no al resto de la audiencia). El presentador responde normalmente con su propio micrófono, y esa respuesta sí sale por el canal principal a todos como siempre.
 
 ## Arquitectura técnica
 
@@ -26,7 +28,7 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 - **WebSockets**: librería `ws` (no Socket.IO) — no hay necesidad de escalar a múltiples instancias ni de fallback a long-polling en una LAN con navegadores modernos, y `ws` entrega los frames binarios de audio del micrófono sin overhead de serialización. Dos endpoints sobre el mismo `http.Server`: `/ws/presenter` (control JSON + audio binario mezclado) y `/ws/listen` (broadcast a oyentes).
 - **Frontend**: HTML/CSS/JS plano servido como estático — solo 2 pantallas (panel del presentador y vista del oyente), sin framework/bundler.
 - **Mismo origen**: presentador y oyentes se sirven desde el mismo Express, sin CORS.
-- **HTTP para oyentes, HTTPS opcional (autofirmado) para el presentador** desde otro dispositivo — ver "Contexto seguro" abajo. Sin HTTPS para exponer la app fuera de la LAN; sigue siendo una app de red local.
+- **HTTPS (autofirmado) por defecto para presentador y audiencia** — necesario para que cualquiera pueda usar su propio micrófono (el presentador desde otro dispositivo, o un oyente para preguntar) — ver "Contexto seguro" abajo. Sin HTTPS para exponer la app fuera de la LAN; sigue siendo una app de red local.
 - **SDKs de Google**: `@google-cloud/speech` (v1, streaming), `@google-cloud/translate` (v2 Basic), `@google-cloud/text-to-speech`.
 - **Utilidades**: `qrcode`, `dotenv`. `crypto.randomUUID()`/`crypto.randomInt()` nativos de Node.
 
@@ -39,7 +41,7 @@ Esto tiene dos resoluciones válidas, según en qué dispositivo esté el micró
 1. **El presentador usa la misma laptop que corre el servidor**: abre el panel vía `http://localhost:<puerto>/presenter` (HTTP plano, sin advertencias). Esto es lo más simple cuando aplica.
 2. **El presentador usa OTRO dispositivo** (ej. su celular, porque la máquina del servidor no tiene micrófono): `localhost` no es alcanzable desde otro dispositivo, así que se necesita HTTPS real. El servidor levanta un segundo listener HTTPS (`src/tls.ts` + `ENABLE_HTTPS`/`HTTPS_PORT`, activado por defecto) con un **certificado autofirmado generado en memoria en cada arranque** (nunca se escribe a disco), con SAN cubriendo `localhost`, `127.0.0.1` y cada IP LAN detectada. El navegador muestra una advertencia de "conexión no privada" (esperada e inevitable para un certificado no emitido por una autoridad reconocida) que el presentador acepta una vez; después de eso, HTTPS cuenta como contexto seguro y el micrófono del otro dispositivo funciona con normalidad.
 
-Los oyentes siguen usando HTTP plano siempre (puerto `PORT`) — no tiene sentido exponerlos a la advertencia de certificado solo para ver subtítulos y escuchar audio, que no requieren contexto seguro.
+**Actualización (preguntas del público)**: dado que un oyente también puede usar su propio micrófono para preguntar (ver "Preguntas del público" abajo), la URL de audiencia que se imprime/codifica en el QR ahora es **HTTPS por defecto** (`buildListenerHttpsUrl`), no HTTP — así cualquiera puede preguntar sin tener que cambiar de URL a mitad del evento. Esto significa que todos los oyentes ven la advertencia de certificado una vez al unirse, no solo quien pregunte; se prefirió consistencia sobre evitarle la advertencia a la mayoría que solo escucha. Con `ENABLE_HTTPS=false`, la audiencia vuelve a HTTP plano y nadie (ni el presentador desde otro dispositivo ni el público) puede usar su micrófono — solo queda disponible el presentador por `localhost`.
 
 ### Abstracción de proveedor (Google por defecto, ElevenLabs para voz, local a futuro)
 
@@ -99,9 +101,15 @@ Los 3 servicios de Google usan formatos de código de idioma distintos (STT/TTS:
 
 El presentador puede pausar la sesión (ej. una pregunta y respuesta, un video, un receso) sin terminarla: `pause_session` cierra el stream de STT activo (misma mecánica que un reinicio programado, pero sin abrir uno nuevo) y el navegador del presentador deja de enviar frames de audio — nada se transcribe ni se factura mientras está en pausa. El `Session.id`, el historial de segmentos y las conexiones de los oyentes se mantienen intactos; los oyentes ven un indicador de "en pausa" pero conservan el subtítulo/scroll-back previo. `resume_session` abre un stream de STT nuevo y continúa el contador `seq` donde iba. A diferencia de `stop_session`, pausar/reanudar no requiere volver a elegir idiomas ni hace que los oyentes se reconecten.
 
+### Preguntas del público
+
+Un oyente a la vez puede "pedir la palabra" (`src/ws/questionFloor.ts`, usado por `ListenerHub`): elige su propio idioma al conectarse (dropdown igual al de idiomas del presentador), toca "Preguntar", concede permiso de micrófono (por eso toda la audiencia entra por HTTPS por defecto — ver "Hallazgo técnico clave"), y el servidor abre un `SpeechRecognizer` adicional en su idioma usando el mismo `TranslationProvider` de la sesión. Cada frase finalizada se traduce al idioma del presentador (`sourceLanguage` de la sesión, no el `targetLanguage` de la audiencia) y se envía **solo al presentador** (`audience_question`, nunca al resto de oyentes) — no pasa por `SessionManager` ni genera `TranscriptSegment`s, es un canal lateral efímero separado del pipeline principal.
+
+Mientras alguien tiene la palabra, el servidor difunde `question_floor_busy` a todos los oyentes (deshabilita su botón "Preguntar"); al terminar (`end_question` explícito, desconexión del que pregunta, o fin de la sesión) difunde `question_floor_free`. Solo un "piso" (floor) activo a la vez — evita streams de STT simultáneos y audio superpuesto. El presentador responde la pregunta con su propio micrófono de forma normal; esa respuesta sale por el pipeline principal a toda la audiencia, como cualquier otra frase.
+
 ### Control de acceso del presentador
 
-PIN numérico de 6 dígitos generado al arrancar el servidor (solo visible en la terminal), intercambiado por un token opaco guardado en `sessionStorage`. La vista de oyente no requiere PIN. Solo la conexión de presentador que inició la sesión activa puede enviar audio.
+PIN numérico de 6 dígitos generado al arrancar el servidor (solo visible en la terminal), intercambiado por un token opaco guardado en `sessionStorage`. La vista de oyente no requiere PIN — tampoco para pedir la palabra y preguntar (cualquiera en la LAN puede hacerlo, limitado únicamente por el turno único). Solo la conexión de presentador que inició la sesión activa puede enviar audio del canal principal.
 
 ### Descubribilidad para la audiencia
 
@@ -141,6 +149,11 @@ interface TranscriptSegment {
   - *Create/Read*: se agrega a un mapa de conexiones activas; `listenerCount` se empuja (con debounce) al presentador.
   - *Update*: no aplica.
   - *Delete*: se remueve al cerrar/perder la conexión.
+- **Question floor** (singleton efímero, un asker a la vez - no es una entidad persistida ni parte de `Session`):
+  - *Create*: `request_question {language}` por WS de un oyente (sin autenticación) — rechaza si la sesión está `idle`, si el idioma es inválido, o si ya hay alguien preguntando (`question_denied`); si no, concede (`question_granted`) y abre un `SpeechRecognizer` en el idioma del oyente.
+  - *Read*: cada frase finalizada se traduce y se envía **solo al presentador** (`audience_question`); el resto de la audiencia solo ve `question_floor_busy`/`question_floor_free` (sin contenido de la pregunta).
+  - *Update*: no aplica — no hay edición de una pregunta en curso, solo existe/no existe.
+  - *Delete*: `end_question` del propio asker, su desconexión, o el fin de la sesión — todos liberan el floor (`question_floor_free`) y detienen el `SpeechRecognizer`.
 
 ## Estructura de archivos
 
@@ -168,6 +181,7 @@ echotalk/
     ws/
       presenterSocket.ts
       listenerSocket.ts
+      questionFloor.ts          # turno unico de "pedir la palabra" para preguntas del publico
     routes.ts
     network.ts
     tls.ts                    # genera el certificado autofirmado para el servidor HTTPS
@@ -179,7 +193,7 @@ echotalk/
 
 ## Fuera de alcance (v1)
 
-Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma por oyente individual · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente.
+Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma **de recepción** por oyente individual (el idioma que cada oyente elige al unirse es solo para si pregunta, no cambia en qué idioma recibe la interpretación principal, que sigue siendo uno solo por sesión) · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente · varias preguntas simultáneas (un piso, un asker a la vez) · que la pregunta traducida llegue a la audiencia (solo al presentador).
 
 ## Riesgos y limitaciones conocidas
 
@@ -193,7 +207,9 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 
 ## Tests automatizados
 
-`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, la generación del certificado autofirmado (`tls.ts`), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
+`npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, la generación del certificado autofirmado (`tls.ts`), el turno único de preguntas (`questionFloor.ts`: conceder/denegar, traducción, liberación), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener y el flujo completo de preguntas del público (conceder/denegar/liberar, también al terminar la sesión) de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
+
+**Nota de diseño de tests**: los tests de WebSocket que esperan un mensaje de *broadcast* disparado por la acción de OTRO socket deben registrar ese `waitForMessage` **antes** de disparar la acción (guardar la promesa, disparar, luego esperarla) — si el broadcast no tiene ninguna espera asíncrona de por medio en el servidor, puede llegar y perderse antes de que el test esté escuchando, colgando el test indefinidamente en vez de fallar con un timeout. Ver el comentario sobre `waitForMessage` en `app.test.ts`.
 
 ## Verificación end-to-end
 
@@ -208,3 +224,4 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 8. Detener sesión: oyentes reciben aviso de fin, una nueva sesión arranca limpia.
 9. Reconexión de un oyente (modo avión o recarga de pestaña) durante una sesión viva.
 10. PIN incorrecto rechazado sin filtrar información.
+11. **Preguntas del público**: en la vista de oyente, elegir un idioma distinto al de la charla, tocar "Preguntar", conceder el permiso de micrófono (confirma que HTTPS para la audiencia habilita esto), hablar una pregunta corta. Confirmar que: (a) el botón "Preguntar" se deshabilita en los demás oyentes mientras tanto, (b) la pregunta traducida aparece en el panel del presentador y NO en la vista de los demás oyentes, (c) tocar "Terminar pregunta" libera el turno y reactiva el botón para todos, (d) un segundo oyente que intenta preguntar mientras el primero tiene la palabra recibe un mensaje de "otra persona está preguntando".

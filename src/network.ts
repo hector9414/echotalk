@@ -18,6 +18,16 @@ export function buildListenerUrl(ip: string, port: number): string {
   return `http://${ip}:${port}/`;
 }
 
+// Audience members default to this HTTPS URL (when ENABLE_HTTPS is on) so
+// that anyone can ask a question with their own mic without having to
+// switch URLs mid-event - see SPEC.md "Preguntas del público". The
+// certificate is self-signed, so this means every listener sees the
+// one-time "connection not private" warning when joining, not just
+// whoever ends up asking something.
+export function buildListenerHttpsUrl(ip: string, httpsPort: number): string {
+  return `https://${ip}:${httpsPort}/`;
+}
+
 // getUserMedia requires a secure context (HTTPS, or the localhost/127.0.0.1
 // special case) - a LAN IP over plain HTTP does not qualify. When the
 // presenter is on the SAME machine as the server, this plain-HTTP localhost

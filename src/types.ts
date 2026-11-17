@@ -42,6 +42,12 @@ export type PresenterToServerMessage =
   | { type: 'resume_session' }
   | { type: 'stop_session' };
 
+export interface AudienceQuestion {
+  sourceText: string;
+  sourceLanguageLabel: string;
+  translatedText: string;
+}
+
 // Server -> Presenter
 // Segment updates are echoed to the presenter too (same shape as sent to
 // listeners) so they can see their own live transcript + translation.
@@ -52,11 +58,23 @@ export type ServerToPresenterMessage =
   | { type: 'segment_update'; segment: TranscriptSegment }
   | { type: 'segment_final'; segment: TranscriptSegment }
   | { type: 'stt_status'; status: 'connected' | 'reconnecting' | 'error' }
+  | { type: 'audience_question'; question: AudienceQuestion }
   | { type: 'error'; message: string };
+
+// Listener -> Server (JSON control messages; the asker's mic audio is sent
+// separately as raw binary WS frames on the same socket, only while they
+// hold the question floor - see src/ws/questionFloor.ts).
+export type ListenerToServerMessage =
+  | { type: 'request_question'; language: string }
+  | { type: 'end_question' };
 
 // Server -> Listener
 export type ServerToListenerMessage =
   | { type: 'session_state'; session: SessionPublicState }
   | { type: 'segment_update'; segment: TranscriptSegment }
   | { type: 'segment_final'; segment: TranscriptSegment }
-  | { type: 'session_ended' };
+  | { type: 'session_ended' }
+  | { type: 'question_granted' }
+  | { type: 'question_denied'; reason: string }
+  | { type: 'question_floor_busy' }
+  | { type: 'question_floor_free' };

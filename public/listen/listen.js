@@ -4,6 +4,10 @@
     audioEl: null,
     queue: [],
     playing: false,
+    asking: false,
+    questionAudioContext: null,
+    questionWorkletNode: null,
+    questionMicStream: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -13,6 +17,16 @@
     live: 'En vivo',
     paused: 'El presentador puso la sesión en pausa',
   };
+
+  async function loadLanguages() {
+    const res = await fetch('/api/languages');
+    const languages = await res.json();
+    const select = el('my-language');
+    for (const lang of languages) {
+      select.add(new Option(lang.label, lang.id));
+    }
+    if ([...select.options].some((o) => o.value === 'es-ES')) select.value = 'es-ES';
+  }
 
   function join() {
     el('join-screen').hidden = true;
@@ -59,6 +73,27 @@
         break;
       case 'session_ended':
         setStatusText('La sesión terminó. Gracias por escuchar.');
+        break;
+      case 'question_granted':
+        setAskingUi(true);
+        setQuestionStatus('Tienes la palabra - habla ahora.');
+        break;
+      case 'question_denied':
+        teardownQuestionAudioPipeline();
+        setQuestionStatus(message.reason);
+        break;
+      case 'question_floor_busy':
+        setFloorBusyUi(true);
+        break;
+      case 'question_floor_free':
+        // Covers both ending normally and a forced release (ej. el
+        // presentador detuvo la sesión mientras preguntabas) - siempre es
+        // seguro liberar el micrófono propio si seguía abierto.
+        if (state.asking) {
+          teardownQuestionAudioPipeline();
+          setAskingUi(false);
+        }
+        setFloorBusyUi(false);
         break;
       default:
         break;
@@ -114,5 +149,102 @@
     };
   }
 
+  // --- Preguntas del público (micrófono propio, un oyente a la vez) ---
+
+  function describeMicError(err) {
+    console.error('Fallo al preparar el micrófono para preguntar:', err);
+    const name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+      return 'Permiso de micrófono denegado. Revisa los ajustes de este sitio en tu navegador.';
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+      return 'No se detectó ningún micrófono en este dispositivo.';
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError') {
+      return 'El micrófono está en uso por otra app. Ciérrala e intenta de nuevo.';
+    }
+    if (name === 'SecurityError') {
+      return 'El navegador bloqueó el micrófono. Entra con la URL https:// (no http://) para poder preguntar.';
+    }
+    return `No se pudo usar el micrófono (${name || 'error desconocido'}).`;
+  }
+
+  async function ensureQuestionAudioPipeline() {
+    state.questionMicStream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    state.questionAudioContext = new AudioContext({ sampleRate: 16000 });
+    await state.questionAudioContext.audioWorklet.addModule('/shared/pcm-worklet.js');
+    const source = state.questionAudioContext.createMediaStreamSource(state.questionMicStream);
+    state.questionWorkletNode = new AudioWorkletNode(state.questionAudioContext, 'pcm-worklet-processor');
+    state.questionWorkletNode.port.onmessage = (event) => {
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        state.ws.send(event.data);
+      }
+    };
+    source.connect(state.questionWorkletNode);
+  }
+
+  function teardownQuestionAudioPipeline() {
+    if (state.questionWorkletNode) {
+      state.questionWorkletNode.port.postMessage('flush');
+      state.questionWorkletNode.disconnect();
+      state.questionWorkletNode = null;
+    }
+    if (state.questionAudioContext) {
+      state.questionAudioContext.close();
+      state.questionAudioContext = null;
+    }
+    if (state.questionMicStream) {
+      state.questionMicStream.getTracks().forEach((track) => track.stop());
+      state.questionMicStream = null;
+    }
+  }
+
+  async function askQuestion() {
+    const language = el('my-language').value;
+    if (!language) {
+      setQuestionStatus('Elige tu idioma arriba antes de preguntar.');
+      return;
+    }
+    try {
+      await ensureQuestionAudioPipeline();
+    } catch (err) {
+      setQuestionStatus(describeMicError(err));
+      return;
+    }
+    setQuestionStatus('Conectando...');
+    state.ws.send(JSON.stringify({ type: 'request_question', language }));
+  }
+
+  function endQuestion() {
+    teardownQuestionAudioPipeline();
+    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+      state.ws.send(JSON.stringify({ type: 'end_question' }));
+    }
+    setAskingUi(false);
+    setQuestionStatus('');
+  }
+
+  function setAskingUi(asking) {
+    state.asking = asking;
+    el('ask-button').hidden = asking;
+    el('end-question-button').hidden = !asking;
+  }
+
+  function setFloorBusyUi(busy) {
+    if (state.asking) return; // mis propios botones ya reflejan que YO soy quien pregunta
+    el('ask-button').disabled = busy;
+    setQuestionStatus(busy ? 'Otra persona está preguntando...' : '');
+  }
+
+  function setQuestionStatus(text) {
+    el('question-status').textContent = text;
+  }
+
   el('join-button').addEventListener('click', join);
+  el('ask-button').addEventListener('click', askQuestion);
+  el('end-question-button').addEventListener('click', endQuestion);
+
+  loadLanguages();
 })();

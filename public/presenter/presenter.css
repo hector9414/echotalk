@@ -148,6 +148,12 @@ button#stop-button {
   word-break: break-all;
 }
 
+.hint {
+  color: var(--muted);
+  font-size: 0.85rem;
+  margin-top: -4px;
+}
+
 .transcript {
   max-height: 320px;
   overflow-y: auto;
