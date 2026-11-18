@@ -235,7 +235,14 @@
   async function ensureAudioPipeline() {
     if (state.audioContext) return;
     state.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      // noiseSuppression/autoGainControl deliberately OFF: both can clip the
+      // trailing consonants/vowels of a word as its volume fades out,
+      // mistaking them for background noise - and since that's the same
+      // audio sent to Google STT, the clipped word shows up in the
+      // transcript AND the translated voice, not just locally. echoCancellation
+      // stays on since it's unrelated to this (it's about feedback, not
+      // noise gating) and doesn't cause the same symptom.
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
     });
     state.audioContext = new AudioContext({ sampleRate: 16000 });
     await state.audioContext.audioWorklet.addModule('/shared/pcm-worklet.js');

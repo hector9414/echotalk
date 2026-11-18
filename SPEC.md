@@ -83,7 +83,9 @@ ElevenLabs sale entre 2.5x y 25x más caro que Google según la voz de Google co
 
 ### Pipeline de audio en tiempo real
 
-**Captura (navegador del presentador)**: `getUserMedia` (mono, echo cancellation/noise suppression/AGC) → `AudioContext({sampleRate: 16000})` → **AudioWorklet** (no `MediaRecorder`: WebM/Opus solo mete la cabecera del contenedor en el primer blob, lo que complica reiniciar el stream de STT a mitad de charla; PCM crudo no tiene ese problema) → PCM16 en bloques de ~100-200ms → WebSocket binario al servidor.
+**Captura (navegador del presentador y del oyente que pregunta)**: `getUserMedia` (mono, solo `echoCancellation` - ver nota abajo) → `AudioContext({sampleRate: 16000})` → **AudioWorklet** (no `MediaRecorder`: WebM/Opus solo mete la cabecera del contenedor en el primer blob, lo que complica reiniciar el stream de STT a mitad de charla; PCM crudo no tiene ese problema) → PCM16 en bloques de ~100-200ms → WebSocket binario al servidor.
+
+**`noiseSuppression`/`autoGainControl` deliberadamente desactivados**: estaban activados originalmente junto con `echoCancellation`, pero se identificaron (grabación real de un usuario + análisis de silencios con `ffmpeg`) como la causa más probable de palabras cortadas tanto en el texto reconocido como en el audio traducido - ambos motores de supresión de ruido pueden recortar agresivamente la cola de una palabra (consonantes/vocales que se apagan) confundiéndola con ruido de fondo, y como es la misma señal que llega a Google STT, el corte aparece en ambos lados. `echoCancellation` se deja activado porque no causa este síntoma (es sobre eco/retroalimentación, no sobre supresión de ruido).
 
 **STT streaming (Google Cloud)**: `streamingRecognize` con `encoding: LINEAR16, sampleRateHertz: 16000, languageCode: <origen>, interimResults: true`. Resultados interinos actualizan el segmento en curso; el resultado final dispara traducción + voz.
 
@@ -96,6 +98,10 @@ Los 3 servicios de Google usan formatos de código de idioma distintos (STT/TTS:
 **Distribución**: el audio TTS se guarda en memoria (`Map<segmentId, buffer>`) servido vía `GET /api/audio/:id`; el WebSocket a oyentes solo manda la URL (no el binario embebido).
 
 **Reproducción en el oyente**: un único elemento `<audio>` reutilizado con una cola FIFO de clips. La vista de oyente exige un botón "Unirme" (gesto de usuario) que abre el WS y "ceba" el audio.
+
+**Reproducción en segundo plano (minimizar el navegador/cambiar de app)**: un navegador móvil suspende agresivamente una pestaña en segundo plano (JS/red) salvo que la reconozca como reproduciendo audio activamente. Dos piezas, sin necesitar Picture-in-Picture de video (que no existe para elementos `<audio>` - solo para `<video>`, y requeriría generar un video falso desde un canvas, una pieza bastante más grande y no implementada):
+- **Media Session API** (`navigator.mediaSession.metadata`/`playbackState`, `join()` en `listen.js`): registra la interpretación como "reproduciendo ahora" ante el sistema operativo - es la señal estándar que usan apps como Spotify/YouTube Music para seguir sonando en segundo plano; soporte más limitado en iOS Safari que en Android Chrome.
+- **Reconexión automática del WebSocket** (`scheduleReconnect()`, backoff 1s→2s→4s→8s): si la conexión sí se cae (la pestaña se suspendió del todo, o un corte de red cualquiera), ya no queda un mensaje muerto de "recarga la página" - reintenta solo, y además reconecta de inmediato (sin esperar el backoff) al detectar `visibilitychange` cuando vuelves a la pestaña/app. La sesión no tiene historial que recuperar (ver más abajo) - reconectar solo retoma los segmentos/audio nuevos desde ese momento, no repone lo que se perdió mientras estuvo desconectado.
 
 ### Pausar / reanudar
 
@@ -202,7 +208,8 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 - Si el WiFi del lugar pierde salida a internet, todo el pipeline se detiene (se usa Google Cloud, no un proveedor local).
 - Aislamiento de clientes en redes WiFi de invitados impediría que los oyentes alcancen el servidor — riesgo de infraestructura del lugar.
 - Un AP doméstico soporta confiablemente ~30-50 clientes; escalar a "un par de cientos" de oyentes requiere un AP de nivel empresarial.
-- iOS Safari puede pausar el audio si el oyente bloquea la pantalla.
+- iOS Safari puede pausar el audio si el oyente bloquea la pantalla o minimiza el navegador - el soporte de Media Session API es más limitado ahí que en Android Chrome; si pasa, la reconexión automática al volver a la app evita que quede en un estado muerto, pero no repone el audio que no se reprodujo mientras estuvo en segundo plano.
+- No hay Picture-in-Picture real (ventana flotante) para la reproducción - el navegador solo ofrece esa API para `<video>`, no para audio; lo que sí hay es Media Session API + reconexión automática (ver "Reproducción en segundo plano" arriba), que cubre la necesidad real (que el audio no se corte al cambiar de app) sin la ventana flotante en sí.
 - Nada detiene automáticamente una sesión olvidada salvo la desconexión del presentador.
 - La voz de las preguntas del público (`#question-player` en el panel del presentador) depende del mismo desbloqueo de autoplay que el audio principal de los oyentes — se intenta "primar" con un play()/pause() síncrono en el submit del login, pero un navegador más estricto podría bloquearla igual; el texto de la pregunta siempre llega de todas formas, con o sin audio.
 
@@ -228,3 +235,4 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 9. Reconexión de un oyente (modo avión o recarga de pestaña) durante una sesión viva.
 10. PIN incorrecto rechazado sin filtrar información.
 11. **Preguntas del público**: tras hacer login como presentador (confirma que después de unirse, la pantalla de "Unirme" del oyente desaparece de verdad y no queda apilada encima - ver la lección de CSS arriba), en la vista de oyente elegir un idioma distinto al de la charla, tocar "Preguntar", conceder el permiso de micrófono, hablar una pregunta corta. Confirmar que: (a) el botón "Preguntar" se deshabilita en los demás oyentes mientras tanto, (b) la pregunta traducida aparece en el panel del presentador y se **escucha** en voz (no solo texto) y NO en la vista de los demás oyentes, (c) tocar "Terminar pregunta" libera el turno y reactiva el botón para todos, (d) un segundo oyente que intenta preguntar mientras el primero tiene la palabra recibe un mensaje de "otra persona está preguntando".
+12. **Segundo plano en celular**: desde la vista de oyente en un celular (Android Chrome idealmente), minimizar el navegador o cambiar de app durante 15-30s mientras hay audio en cola. Confirmar que: (a) aparecen controles de "reproduciendo ahora" en la pantalla de bloqueo/notificaciones con el nombre "EchoTalk", (b) el audio sigue sonando en segundo plano (o, si el sistema sí suspendió la pestaña, que al volver se reconecta solo sin necesitar recargar la página).
