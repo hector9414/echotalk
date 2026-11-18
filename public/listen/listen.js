@@ -141,6 +141,9 @@
       case 'session_ended':
         setStatusText('La sesión terminó. Gracias por escuchar.');
         setLiveBadge(false);
+        // The server already discarded its segments, so a line still
+        // showing "Transcribiendo…" can never resolve - drop it.
+        el('captions').querySelectorAll('.caption-line.pending').forEach((line) => line.remove());
         break;
       case 'question_granted':
         setAskingUi(true);

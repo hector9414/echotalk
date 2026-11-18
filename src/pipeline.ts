@@ -44,13 +44,22 @@ export function splitForTts(text: string, byteLimit = TTS_SAFE_BYTE_LIMIT): stri
 // accumulated so far is force-delivered anyway (see handleInterim below).
 // Without that safety valve, someone who talks for a long stretch without
 // pausing would hear/see nothing translated until they finally stop.
+function wordsOf(text: string): string[] {
+  return text.trim().split(/\s+/).filter(Boolean);
+}
+
 export class TranslationPipeline {
   private recognizer: SpeechRecognizer | null = null;
   private currentSegmentId: string | null = null;
-  // How many leading characters of the recognizer's current (cumulative,
-  // within-utterance) text have already been translated/delivered via a
-  // forced chunk - the next chunk only covers text.slice(handledLength).
-  private handledLength = 0;
+  // Text currently shown in the open (non-final) segment, so it can still be
+  // delivered if the utterance ends without new words or the pipeline stops.
+  private currentPendingText = '';
+  // How many leading WORDS of the recognizer's cumulative (within-utterance)
+  // text were already delivered via a forced chunk. Counted in words, not
+  // characters: the ASR routinely revises earlier words (punctuation,
+  // casing, corrections), which shifts character offsets and made a
+  // char-based slice cut words in half.
+  private handledWordCount = 0;
   private utteranceStartedAt: number | null = null;
   private readonly now: () => number;
   private readonly maxInterimDurationMs: number;
@@ -72,9 +81,7 @@ export class TranslationPipeline {
       throw new Error('Idioma de origen invalido para iniciar el pipeline');
     }
 
-    this.currentSegmentId = null;
-    this.handledLength = 0;
-    this.utteranceStartedAt = null;
+    this.resetUtterance();
     this.recognizer = this.provider.createRecognizer(sourceLang.sttCode, {
       onInterim: (text) => this.handleInterim(text),
       onFinal: (text) => {
@@ -95,54 +102,75 @@ export class TranslationPipeline {
     this.recognizer.write(chunk);
   }
 
+  // A segment still open here (e.g. the presenter pauses mid-sentence) is
+  // delivered with whatever text it had, instead of being abandoned - an
+  // abandoned segment never gets finalized and stays as "Transcribiendo…"
+  // on every listener's screen forever.
   stop(): void {
     this.recognizer?.stop();
     this.recognizer = null;
+    const segmentId = this.currentSegmentId;
+    const pendingText = this.currentPendingText;
+    this.resetUtterance();
+    if (segmentId && pendingText) this.deliverSafely(pendingText, segmentId);
+  }
+
+  private resetUtterance(): void {
     this.currentSegmentId = null;
-    this.handledLength = 0;
+    this.currentPendingText = '';
+    this.handledWordCount = 0;
     this.utteranceStartedAt = null;
   }
 
   private handleInterim(text: string): void {
-    if (!text.trim()) return;
+    const words = wordsOf(text);
+    const pendingText = words.slice(this.handledWordCount).join(' ');
+    // Nothing new beyond what a forced chunk already delivered (the ASR
+    // often re-sends the same interim) - creating a segment here would
+    // leave an empty one that is never finalized.
+    if (!pendingText) return;
+
     if (this.utteranceStartedAt === null) {
       this.utteranceStartedAt = this.now();
     }
 
-    const pendingText = text.slice(this.handledLength);
     if (!this.currentSegmentId) {
       this.currentSegmentId = this.sessionManager.createSegment(pendingText).id;
     } else {
       this.sessionManager.updateSegmentInterim(this.currentSegmentId, pendingText);
     }
+    this.currentPendingText = pendingText;
 
-    if (pendingText.trim() && this.now() - this.utteranceStartedAt >= this.maxInterimDurationMs) {
+    if (this.now() - this.utteranceStartedAt >= this.maxInterimDurationMs) {
       const segmentId = this.currentSegmentId;
-      this.handledLength = text.length;
+      this.handledWordCount = words.length;
       this.currentSegmentId = null; // the next interim/final starts a fresh displayed segment
+      this.currentPendingText = '';
       this.utteranceStartedAt = this.now(); // restart the window for the rest of this utterance
-      this.deliver(pendingText, segmentId).catch((err: Error) => {
-        console.error('Error procesando fragmento forzado por pausa larga:', err.message);
-      });
+      this.deliverSafely(pendingText, segmentId);
     }
   }
 
   private async handleFinal(text: string): Promise<void> {
-    const pendingText = text.slice(this.handledLength);
-    this.handledLength = 0;
-    this.utteranceStartedAt = null;
+    const pendingText = wordsOf(text).slice(this.handledWordCount).join(' ');
+    const segmentId = this.currentSegmentId;
+    const lastInterimText = this.currentPendingText;
+    this.resetUtterance();
 
-    // Nothing left to deliver - e.g. a forced chunk already covered this
-    // whole utterance and no new words arrived before the natural final.
-    // Don't create a segment just to leave it empty and never finalized.
-    if (!pendingText.trim()) {
-      this.currentSegmentId = null;
-      return;
-    }
+    // The final can carry no new words beyond a forced chunk (or a revision
+    // can make it shorter). If a segment is still open, deliver the text it
+    // was showing rather than leaving it pending forever; if none is open,
+    // there's genuinely nothing to deliver.
+    const textToDeliver = pendingText || (segmentId ? lastInterimText : '');
+    if (!textToDeliver) return;
 
-    const segmentId = this.currentSegmentId ?? this.sessionManager.createSegment(pendingText).id;
-    this.currentSegmentId = null;
-    await this.deliver(pendingText, segmentId);
+    await this.deliver(textToDeliver, segmentId ?? this.sessionManager.createSegment(textToDeliver).id);
+  }
+
+  private deliverSafely(text: string, segmentId: string): void {
+    this.deliver(text, segmentId).catch((err: Error) => {
+      console.error('Error procesando fragmento:', err.message);
+    });
   }
 
   private async deliver(text: string, initialSegmentId: string): Promise<void> {
@@ -151,7 +179,16 @@ export class TranslationPipeline {
     const targetLang = getLanguageOption(session.targetLanguage);
     if (!sourceLang || !targetLang) return;
 
-    const translated = await this.provider.translator.translate(text, sourceLang.translateCode, targetLang.translateCode);
+    let translated: string;
+    try {
+      translated = await this.provider.translator.translate(text, sourceLang.translateCode, targetLang.translateCode);
+    } catch (err) {
+      // Show the untranslated text rather than leave "Transcribiendo…"
+      // stuck on screen with no way to recover.
+      console.error('Error traduciendo segmento, se muestra el texto original:', (err as Error).message);
+      this.sessionManager.finalizeSegment(initialSegmentId, text, null);
+      return;
+    }
     const chunks = splitForTts(translated);
 
     // Common case: a single chunk reuses the segment already shown to
@@ -161,14 +198,25 @@ export class TranslationPipeline {
     // multiple independently-encoded TTS clips into one buffer.
     for (let i = 0; i < chunks.length; i++) {
       const chunkText = chunks[i];
-      const synthesized = await this.provider.synthesizer.synthesize(
-        chunkText,
-        targetLang.ttsLanguageCode,
-        targetLang.ttsVoiceName,
-      );
       const segmentId = i === 0 ? initialSegmentId : this.sessionManager.createSegment('').id;
-      this.audioStore.set(segmentId, synthesized);
-      this.sessionManager.finalizeSegment(segmentId, chunkText, `/api/audio/${segmentId}`);
+      let audioUrl: string | null = null;
+      try {
+        const synthesized = await this.provider.synthesizer.synthesize(
+          chunkText,
+          targetLang.ttsLanguageCode,
+          targetLang.ttsVoiceName,
+        );
+        // The session may have been stopped while TTS was in flight (its
+        // segments and audio were already cleared) - don't leak a clip.
+        if (this.sessionManager.hasSegment(segmentId)) {
+          this.audioStore.set(segmentId, synthesized);
+          audioUrl = `/api/audio/${segmentId}`;
+        }
+      } catch (err) {
+        // Voice is a bonus over the text: still show the translation.
+        console.error('Error sintetizando voz, se muestra solo el texto:', (err as Error).message);
+      }
+      this.sessionManager.finalizeSegment(segmentId, chunkText, audioUrl);
     }
   }
 }

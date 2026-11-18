@@ -16,7 +16,7 @@ function makeClock(start = 0) {
   return { now: () => value, advance: (ms: number) => (value += ms) };
 }
 
-function makeFakeProvider() {
+function makeFakeProvider(options: { translateShouldFail?: boolean; synthesizeShouldFail?: boolean } = {}) {
   let capturedHandlers: RecognitionHandlers | null = null;
   const writes: Buffer[] = [];
   const translateCalls: Array<{ text: string; from: string; to: string }> = [];
@@ -38,12 +38,14 @@ function makeFakeProvider() {
     translator: {
       async translate(text, from, to) {
         translateCalls.push({ text, from, to });
+        if (options.translateShouldFail) throw new Error('translate down (fake)');
         return `EN:${text}`;
       },
     },
     synthesizer: {
       async synthesize(text, languageCode) {
         synthesizeCalls.push({ text, languageCode });
+        if (options.synthesizeShouldFail) throw new Error('tts down (fake)');
         return { buffer: Buffer.from(text), mime: 'audio/mpeg' };
       },
     },
@@ -242,6 +244,132 @@ describe('TranslationPipeline', () => {
     const segments = sm.getSegments();
     assert.equal(segments.length, 2);
     assert.equal(segments[1].isFinal, true);
+  });
+
+  // Every scenario below used to leave a segment that was never finalized,
+  // which listeners render as a "Transcribiendo…" line stuck forever.
+  const pendingSegments = (sm: SessionManager) => sm.getSegments().filter((s) => !s.isFinal);
+
+  it('a repeated interim right after a forced chunk does not create an empty segment that never finalizes', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    clock.advance(1500);
+    fake.emitInterim('hola mundo'); // forced chunk
+    fake.emitInterim('hola mundo'); // the ASR re-sends the same interim - common
+    fake.emitFinal('hola mundo');
+    await tick();
+    await tick();
+
+    assert.deepEqual(pendingSegments(sm), []);
+    assert.equal(sm.getSegments().length, 1);
+  });
+
+  it('an ASR revision of earlier words does not cut the next chunk in the middle of a word', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola mundo');
+    clock.advance(1500);
+    fake.emitInterim('hola mundo como'); // forced chunk covers 3 words
+    // The final revises punctuation/accents, shifting every character
+    // offset - a char-based slice would have produced "ómo estás?".
+    fake.emitFinal('Hola, mundo, ¿cómo estás?');
+    await tick();
+    await tick();
+
+    assert.equal(fake.translateCalls.length, 2);
+    assert.equal(fake.translateCalls[1].text, 'estás?');
+    assert.deepEqual(pendingSegments(sm), []);
+  });
+
+  it('a final with no new words still finalizes a segment that was open, instead of abandoning it', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    clock.advance(1500);
+    fake.emitInterim('hola mundo'); // forced chunk: 2 words handled
+    fake.emitInterim('hola mundo como'); // opens a new segment showing "como"
+    fake.emitFinal('hola mundo'); // revision dropped the last word
+    await tick();
+    await tick();
+
+    assert.deepEqual(pendingSegments(sm), []);
+    assert.equal(fake.translateCalls[1].text, 'como');
+  });
+
+  it('stop() (e.g. pausing mid-sentence) delivers the segment that was still open', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider);
+    pipeline.start();
+
+    fake.emitInterim('hola mundo');
+    pipeline.stop();
+    await tick();
+    await tick();
+
+    assert.deepEqual(pendingSegments(sm), []);
+    assert.equal(sm.getSegments()[0].translatedText, 'EN:hola mundo');
+  });
+
+  it('if translation fails, the segment is finalized with the original text instead of staying pending', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider({ translateShouldFail: true });
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider);
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    fake.emitFinal('hola');
+    await tick();
+    await tick();
+
+    const [segment] = sm.getSegments();
+    assert.equal(segment.isFinal, true);
+    assert.equal(segment.translatedText, 'hola');
+    assert.equal(segment.audioUrl, null);
+  });
+
+  it('if voice synthesis fails, the segment is still finalized with the translated text and no audio', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider({ synthesizeShouldFail: true });
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider);
+    pipeline.start();
+
+    fake.emitFinal('hola');
+    await tick();
+    await tick();
+
+    const [segment] = sm.getSegments();
+    assert.equal(segment.isFinal, true);
+    assert.equal(segment.translatedText, 'EN:hola');
+    assert.equal(segment.audioUrl, null);
   });
 
   it('writeAudio forwards to the recognizer while live, and drops audio once paused', () => {

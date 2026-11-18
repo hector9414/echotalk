@@ -122,7 +122,11 @@ export class SessionManager extends EventEmitter {
     this.emit('segmentUpdate', segment);
   }
 
-  finalizeSegment(id: string, translatedText: string, audioUrl: string): void {
+  hasSegment(id: string): boolean {
+    return this.segmentsById.has(id);
+  }
+
+  finalizeSegment(id: string, translatedText: string, audioUrl: string | null): void {
     const segment = this.segmentsById.get(id);
     if (!segment) return;
     segment.translatedText = translatedText;
