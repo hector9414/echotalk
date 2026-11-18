@@ -77,9 +77,10 @@ La terminal va a imprimir:
 ## Cómo usarla
 
 1. Abre el panel del presentador con la URL que corresponda (ver "Usar el celular como presentador" si esta máquina no tiene micrófono). Ingresa el PIN.
-2. Elige el idioma de origen (el que va a hablar el orador) y el idioma de destino (el que va a recibir la audiencia), y presiona "Iniciar".
-3. La audiencia escanea el QR (o entra a la URL mostrada) desde su navegador, acepta la advertencia de certificado (una vez), elige su propio idioma (por si quiere preguntar) y toca "Unirme".
-4. Puedes **pausar** la interpretación (ej. para un receso o preguntas) sin perder la sesión ni desconectar a los oyentes, y **reanudar** cuando sigas. "Detener" sí termina la sesión por completo.
+2. (Opcional) Toca **"Probar micrófono"** y habla — una barra te muestra el nivel de audio captado en vivo, para confirmar que el micrófono funciona antes de empezar. Nota: el audio que recibe Google STT va sin ningún filtro de sensibilidad propio de la app — esta prueba es solo para verificar que el micrófono físico funciona, no un control de "umbral".
+3. Elige el idioma de origen (el que va a hablar el orador) y el idioma de destino (el que va a recibir la audiencia), y presiona "Iniciar".
+4. La audiencia escanea el QR (o entra a la URL mostrada) desde su navegador, acepta la advertencia de certificado (una vez), elige su propio idioma (por si quiere preguntar) y toca "Unirme".
+5. Puedes **pausar** la interpretación (ej. para un receso o preguntas) sin perder la sesión ni desconectar a los oyentes, y **reanudar** cuando sigas. "Detener" sí termina la sesión por completo.
 
 ## Usar el celular (u otro dispositivo) como presentador
 

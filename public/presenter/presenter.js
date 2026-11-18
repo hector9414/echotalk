@@ -8,6 +8,10 @@
     questionAudioEl: null,
     questionQueue: [],
     questionPlaying: false,
+    micTestStream: null,
+    micTestAudioContext: null,
+    micTestAnalyser: null,
+    micTestRafId: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -102,6 +106,7 @@
     el('stop-button').disabled = session.status === 'idle';
     el('source-language').disabled = session.status !== 'idle';
     el('target-language').disabled = session.status !== 'idle';
+    el('mic-test-button').disabled = session.status !== 'idle';
 
     if (session.status === 'idle') {
       el('transcript').innerHTML = '';
@@ -307,7 +312,79 @@
     );
   }
 
+  // Prueba de micrófono independiente de la sesión real: no usa el
+  // AudioWorklet ni manda nada al servidor, solo muestra el nivel de audio
+  // captado en vivo (vía AnalyserNode) para confirmar que el micrófono
+  // funciona antes de iniciar. Usa los mismos ajustes de getUserMedia que
+  // la sesión real (ver ensureAudioPipeline) para que el nivel mostrado sea
+  // representativo. No hay ningún "umbral" que configurar aquí - Google STT
+  // recibe el audio crudo, sin ningún filtro de sensibilidad propio de esta
+  // app; esto es solo retroalimentación visual.
+  async function toggleMicTest() {
+    if (state.micTestStream) {
+      stopMicTest();
+      return;
+    }
+
+    el('mic-test-error').textContent = '';
+    try {
+      state.micTestStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+      });
+    } catch (err) {
+      el('mic-test-error').textContent = describeAudioPipelineError(err);
+      return;
+    }
+
+    state.micTestAudioContext = new AudioContext();
+    const source = state.micTestAudioContext.createMediaStreamSource(state.micTestStream);
+    state.micTestAnalyser = state.micTestAudioContext.createAnalyser();
+    state.micTestAnalyser.fftSize = 512;
+    source.connect(state.micTestAnalyser);
+
+    el('mic-test-button').textContent = 'Detener prueba';
+    updateMicMeter();
+  }
+
+  function updateMicMeter() {
+    const data = new Uint8Array(state.micTestAnalyser.fftSize);
+    state.micTestAnalyser.getByteTimeDomainData(data);
+
+    let sumSquares = 0;
+    for (let i = 0; i < data.length; i++) {
+      const normalized = (data[i] - 128) / 128; // -1..1
+      sumSquares += normalized * normalized;
+    }
+    const rms = Math.sqrt(sumSquares / data.length); // ~0 (silencio) .. ~1 (muy fuerte)
+    const level = Math.min(1, rms * 4); // escalado solo para que se note en la barra
+
+    const fill = el('mic-meter-fill');
+    fill.style.width = `${Math.round(level * 100)}%`;
+    fill.style.background = level < 0.5 ? '#4caf7d' : level < 0.8 ? '#e0b32e' : '#d64545';
+
+    state.micTestRafId = requestAnimationFrame(updateMicMeter);
+  }
+
+  function stopMicTest() {
+    if (state.micTestRafId) {
+      cancelAnimationFrame(state.micTestRafId);
+      state.micTestRafId = null;
+    }
+    if (state.micTestAudioContext) {
+      state.micTestAudioContext.close();
+      state.micTestAudioContext = null;
+    }
+    if (state.micTestStream) {
+      state.micTestStream.getTracks().forEach((track) => track.stop());
+      state.micTestStream = null;
+    }
+    state.micTestAnalyser = null;
+    el('mic-meter-fill').style.width = '0%';
+    el('mic-test-button').textContent = 'Probar micrófono';
+  }
+
   async function startSession() {
+    stopMicTest(); // no dejar dos getUserMedia abiertos a la vez
     try {
       await ensureAudioPipeline();
     } catch (err) {
@@ -358,6 +435,7 @@
   el('pause-button').addEventListener('click', pauseSession);
   el('resume-button').addEventListener('click', resumeSession);
   el('stop-button').addEventListener('click', stopSession);
+  el('mic-test-button').addEventListener('click', toggleMicTest);
 
   loadLanguages();
 })();
