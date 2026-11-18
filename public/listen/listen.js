@@ -243,7 +243,22 @@
     return `No se pudo usar el micrófono (${name || 'error desconocido'}).`;
   }
 
+  // navigator.mediaDevices es undefined por completo en un contexto no
+  // seguro (HTTP plano en una IP de LAN, ni HTTPS ni localhost) - acceder a
+  // .getUserMedia ahí lanza un TypeError genérico ("Cannot read properties
+  // of undefined"), no un DOMException con nombre reconocible, así que
+  // nunca llegaba al mensaje ya escrito para este caso (ver 'SecurityError'
+  // arriba). Esta verificación explícita lo redirige al mensaje correcto.
+  function requireMediaDevices() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      const err = new Error('getUserMedia no está disponible: la página no está en un contexto seguro.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+  }
+
   async function ensureQuestionAudioPipeline() {
+    requireMediaDevices();
     state.questionMicStream = await navigator.mediaDevices.getUserMedia({
       // Same reasoning as presenter.js's mic capture: noiseSuppression/
       // autoGainControl can clip the tail of a word, which then shows up

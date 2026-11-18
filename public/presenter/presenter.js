@@ -253,6 +253,7 @@
 
   async function ensureAudioPipeline() {
     if (state.audioContext) return;
+    requireMediaDevices();
     state.micStream = await navigator.mediaDevices.getUserMedia({
       // noiseSuppression/autoGainControl deliberately OFF: both can clip the
       // trailing consonants/vowels of a word as its volume fades out,
@@ -312,6 +313,19 @@
     );
   }
 
+  // navigator.mediaDevices es undefined por completo en un contexto no
+  // seguro (ej. una IP de LAN por HTTP plano) - acceder a .getUserMedia ahí
+  // lanza un TypeError genérico, no un SecurityError, así que nunca
+  // llegaba al mensaje ya escrito para ese caso. Esta verificación
+  // explícita lo redirige al mensaje correcto.
+  function requireMediaDevices() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      const err = new Error('getUserMedia no está disponible: la página no está en un contexto seguro.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+  }
+
   // Prueba de micrófono independiente de la sesión real: no usa el
   // AudioWorklet ni manda nada al servidor, solo muestra el nivel de audio
   // captado en vivo (vía AnalyserNode) para confirmar que el micrófono
@@ -328,6 +342,7 @@
 
     el('mic-test-error').textContent = '';
     try {
+      requireMediaDevices();
       state.micTestStream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
       });
