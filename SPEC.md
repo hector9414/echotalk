@@ -19,6 +19,7 @@ Esta especificación se escribió tras una entrevista de requisitos con el usuar
 9. **Arquitectura de proveedor**: interfaz intercambiable de motor de voz/traducción (para poder añadir después un proveedor gratuito/local — faster-whisper + LibreTranslate/Argos + Piper, corriendo como procesos locales), pero **se construye e implementa solo el proveedor Google Cloud en esta versión**. Más tarde se agregó ElevenLabs como motor de voz alternativo (ver "Abstracción de proveedor" abajo).
 10. **HTTPS para el presentador y la audiencia**: agregado para permitir que el presentador use un dispositivo distinto al que corre el servidor (ej. su celular, si esa máquina no tiene micrófono) y, más adelante, para que la audiencia pueda preguntar con su propio micrófono — ver "Hallazgo técnico clave" y "Preguntas del público" abajo.
 11. **Preguntas del público**: un oyente a la vez puede pedir la palabra, hablar en su propio idioma (elegido al unirse) y que su pregunta, ya traducida (texto **y voz**), le llegue **solo al presentador** (no al resto de la audiencia). El presentador responde normalmente con su propio micrófono, y esa respuesta sí sale por el canal principal a todos como siempre.
+12. **Modo discusión (post-presentación)**: tras la charla, se puede abrir un espacio de discusión donde **cualquiera** (cualquier oyente, o el propio operador del panel) pide la palabra por turnos y, al hablar, se traduce y se difunde a **todo el auditorio** (no solo al presentador, a diferencia de "Preguntas del público" arriba) — resuelve el problema de "dar la palabra a cada uno manualmente". Durante este modo no existe un "presentador" con micrófono fijo: todos, incluido el operador, piden la palabra igual. Solo soporta español↔inglés (si quien habla y quien escucha ya comparten el mismo de los dos, no se traduce ni se sintetiza voz — solo se muestra el texto original). Ver "Modo discusión" abajo para el diseño completo.
 
 ## Arquitectura técnica
 
@@ -107,9 +108,39 @@ Un oyente a la vez puede "pedir la palabra" (`src/ws/questionFloor.ts`, usado po
 
 Mientras alguien tiene la palabra, el servidor difunde `question_floor_busy` a todos los oyentes (deshabilita su botón "Preguntar"); al terminar (`end_question` explícito, desconexión del que pregunta, o fin de la sesión) difunde `question_floor_free`. Solo un "piso" (floor) activo a la vez — evita streams de STT simultáneos y audio superpuesto. El presentador responde la pregunta con su propio micrófono de forma normal; esa respuesta sale por el pipeline principal a toda la audiencia, como cualquier otra frase.
 
+`QuestionFloor` solo acepta solicitudes mientras `session.status` es `live` o `paused` - en `discussion` (ver abajo) se usa un mecanismo distinto, `DiscussionFloor`.
+
+### Modo discusión (post-presentación)
+
+Diseñado tras una segunda entrevista de requisitos (misma metodología que la original) — decisiones confirmadas con el usuario antes de implementar.
+
+**Dependencia pendiente de resolver antes de implementar**: este diseño reutiliza `MAX_INTERIM_DURATION_MS`/el corte forzado por tiempo de `TranslationPipeline` - pero esa pieza vive hoy solo en el PR #4 (`claude/simultaneous-chunking-and-tts-speed`), todavía no fusionado a `master` al momento de escribir este spec (esta rama, `claude/discussion-mode`, sale de `master` antes de ese PR). Antes de implementar hay que decidir: fusionar PR #4 primero, o traer esos commits a esta rama (ej. merge/cherry-pick), para no reimplementar el mismo mecanismo dos veces en paralelo.
+
+**Por qué existe**: "Preguntas del público" traduce siempre hacia el presentador y solo él la recibe - sirve para una pregunta puntual durante la charla, pero no para un espacio de discusión abierta donde varias personas (incluido quien dio la charla) van tomando la palabra por turnos y **todos** necesitan escuchar la traducción, no solo quien está en el panel. Dar la palabra manualmente a cada uno desde el panel sería inviable en la práctica.
+
+**Activación**: nuevo estado de sesión `SessionStatus = 'idle' | 'live' | 'paused' | 'discussion'`. El operador del panel (presentador) tiene dos botones nuevos, disponibles **desde cualquier estado** (`start_discussion` funciona incluso desde `idle`, sin haber presentado antes - útil para eventos que son solo una mesa de discusión):
+- **"Iniciar discusión"** (`start_discussion`): si había un pipeline de presentación corriendo (`live`/`paused`), se detiene (`pipeline.stop()`) igual que `stop_session`, pero el estado pasa a `discussion` en vez de `idle` - la sesión sigue viva (mismo `Session.id`, oyentes conectados no se reconectan).
+- **"Terminar discusión"** (`end_discussion`): libera el `DiscussionFloor` si alguien tenía la palabra, y vuelve a `idle` (simétrico con la activación - no hay ida y vuelta entre `discussion` y `live`; para volver a presentar hay que iniciar sesión de cero).
+
+**Sin presentador fijo durante la discusión**: `sourceLanguage`/`targetLanguage` de la `Session` quedan sin uso (se conservan con su último valor, no se limpian) - el idioma de cada turno lo elige quien habla, no la sesión. El operador del panel pierde su micrófono "siempre activo": en `discussion`, **también** tiene que pedir la palabra para hablar, exactamente igual que cualquier oyente. Esto es lo que resuelve "que sea indiferente quién es el presentador" - durante la discusión, el rol de "quien habla ahora" es dinámico y rota por el mismo mecanismo de turno único para todos, operador incluido.
+
+**`DiscussionFloor`** (`src/ws/discussionFloor.ts`, nuevo - análogo a `QuestionFloor` pero con dos diferencias clave: lo puede pedir CUALQUIERA -oyente o presentador- y el resultado se difunde a TODOS, no solo al presentador):
+- Un solo turno activo a la vez (`request_turn {language}` / `end_turn`, mismos nombres de mensaje para presentador y oyente - evita duplicar protocolo). Rechaza si la sesión no está en `discussion`, si ya hay alguien hablando, o si `language` no mapea a español o inglés (`translateCode !== 'es' && translateCode !== 'en'`) - **solo esos dos idiomas están soportados en este modo**, de los 10 de `LANGUAGES`.
+- Al conceder el turno, abre un `SpeechRecognizer` en el idioma del que habla (igual que `QuestionFloor`), **con el mismo corte forzado por tiempo máximo que `TranslationPipeline`** (`MAX_INTERIM_DURATION_MS`) - un turno de discusión puede ser tan largo como una intervención en la charla principal, y sin este mecanismo alguien que hable corrido tampoco se traduciría hasta pausar.
+- **Enrutamiento por idioma, no broadcast uniforme** (la diferencia arquitectónica más grande de este modo): cada conexión (oyente o presentador) ya tiene asociado su propio "idioma de visualización" (`displayLanguage`, ver abajo). Por cada fragmento (interino, forzado por tiempo, o final):
+  - A quienes comparten el idioma de quien habla: se les manda el **texto original**, sin traducir, **sin sintetizar voz** (ya entienden el idioma, no hace falta voz ni gastar en síntesis).
+  - A quienes tienen el OTRO idioma (es↔en): se les manda el texto **traducido** + audio sintetizado, igual que el pipeline principal - pero solo una vez que hay texto final/forzado para traducir (los interinos muestran "Traduciendo…" mientras tanto, igual que hoy con "Transcribiendo…").
+  - A quienes eligieron un idioma que no es español ni inglés: no reciben nada de la discusión (ni texto ni audio) y no pueden pedir la palabra - ver "Fuera de alcance" abajo.
+  - Como máximo hay que traducir+sintetizar **una vez** por fragmento (al idioma contrario al de quien habla, nunca más de uno), no N veces - el enrutamiento es "propio vs. el-otro-de-los-dos", no por cada idioma individual.
+- Igual que `QuestionFloor`: se libera (`end_turn`, desconexión del que habla, o fin del modo discusión) deteniendo el `SpeechRecognizer` y notificando a todos (`turn_floor_free`) para que el botón de pedir la palabra se reactive.
+
+**`displayLanguage` por conexión** (nuevo, vive en memoria junto a cada WebSocket, no es una entidad persistida): el oyente ya elige su idioma al unirse (hoy solo se usaba para "Preguntas del público"); ese mismo valor se reutiliza aquí - el cliente lo manda proactivamente (`set_language {language}`) justo al conectar, y el servidor lo guarda asociado a esa conexión (`Map<WebSocket, string>` en `ListenerHub`, y uno equivalente en `PresenterHub` para cuando el operador participa). El operador del panel, al entrar a modo discusión, ve el mismo selector de idioma que un oyente (confirmado explícitamente: trato simétrico) y también manda `set_language`. Reenviar `set_language` más tarde actualiza el valor (idempotente - útil si alguien se equivocó de idioma al unirse).
+
+**UI**: se reutiliza la misma vista de subtítulos de siempre (`#captions` en el oyente, `#transcript` en el presentador) para mostrar la discusión - no hay un panel separado. El botón "Preguntar"/"Pedir la palabra" también se reutiliza: su comportamiento (a quién llega la traducción) depende de `session.status` en el momento de la solicitud (`live`/`paused` → `QuestionFloor`, solo al presentador; `discussion` → `DiscussionFloor`, a todos), pero es la misma interacción física para el usuario.
+
 ### Control de acceso del presentador
 
-PIN numérico de 6 dígitos generado al arrancar el servidor (solo visible en la terminal), intercambiado por un token opaco guardado en `sessionStorage`. La vista de oyente no requiere PIN — tampoco para pedir la palabra y preguntar (cualquiera en la LAN puede hacerlo, limitado únicamente por el turno único). Solo la conexión de presentador que inició la sesión activa puede enviar audio del canal principal.
+PIN numérico de 6 dígitos generado al arrancar el servidor (solo visible en la terminal), intercambiado por un token opaco guardado en `sessionStorage`. La vista de oyente no requiere PIN — tampoco para pedir la palabra y preguntar (cualquiera en la LAN puede hacerlo, limitado únicamente por el turno único). Solo la conexión de presentador que inició la sesión activa puede enviar audio del canal principal. El PIN sigue siendo el único control de acceso al panel de administración en sí (`start_discussion`/`end_discussion` lo requieren, igual que el resto de comandos) - "que sea indiferente quién es el presentador" (ver "Modo discusión") es sobre quién habla en cada turno de la discusión, no sobre quién puede abrir el panel.
 
 ### Descubribilidad para la audiencia
 
@@ -120,10 +151,10 @@ Al arrancar, el servidor imprime todas las IPs LAN detectadas + genera un QR apu
 Todo en memoria de proceso — nada se persiste a disco.
 
 ```ts
-type SessionStatus = 'idle' | 'live' | 'paused';
+type SessionStatus = 'idle' | 'live' | 'paused' | 'discussion';
 interface Session {
   id: string; status: SessionStatus;
-  sourceLanguage: string; targetLanguage: string;
+  sourceLanguage: string; targetLanguage: string; // sin uso durante 'discussion'
   startedAt: number | null; listenerCount: number;
 }
 interface TranscriptSegment {
@@ -136,10 +167,10 @@ interface TranscriptSegment {
 ```
 
 - **Session** (singleton en memoria):
-  - *Create*: `start_session {sourceLanguage, targetLanguage}` por WS (requiere token). Valida contra la tabla de idiomas, rechaza si ya hay sesión `live`/`paused`.
+  - *Create*: `start_session {sourceLanguage, targetLanguage}` por WS (requiere token). Valida contra la tabla de idiomas, rechaza si ya hay sesión `live`/`paused`/`discussion`. `start_discussion` (sin parámetros, requiere token) crea/continúa la sesión en estado `discussion` desde cualquier estado.
   - *Read*: `GET /api/session/status` (REST, público) + push `session_state` a presentador y oyentes.
-  - *Update*: `pause_session` / `resume_session` (WS, requiere token) alternan entre `live` y `paused` — sí existe edición en caliente, pero solo para pausar/reanudar. Cambiar de idioma sigue sin poder hacerse en caliente: requiere `stop_session` + `start_session`.
-  - *Delete*: `stop_session` (WS, requiere token) — limpia todo el estado en memoria, notifica `session_ended`.
+  - *Update*: `pause_session` / `resume_session` (WS, requiere token) alternan entre `live` y `paused`. Cambiar de idioma sigue sin poder hacerse en caliente: requiere `stop_session` + `start_session`. No hay transición de ida y vuelta entre `discussion` y `live`/`paused` - son modos mutuamente excluyentes dentro de la misma sesión.
+  - *Delete*: `stop_session` o `end_discussion` (WS, requiere token) — limpia todo el estado en memoria, notifica `session_ended`.
 - **TranscriptSegment**:
   - *Create*: generado internamente por el pipeline — no es una acción de usuario.
   - *Read*: broadcast en vivo (`segment_update` / `segment_final`); scroll-back acotado (~50 líneas) solo en el navegador del oyente.
@@ -154,6 +185,16 @@ interface TranscriptSegment {
   - *Read*: cada frase finalizada se traduce y se sintetiza en voz, y ambas (`audioUrl` puede ser `null` si la síntesis falla) se envían **solo al presentador** (`audience_question`); el resto de la audiencia solo ve `question_floor_busy`/`question_floor_free` (sin contenido de la pregunta).
   - *Update*: no aplica — no hay edición de una pregunta en curso, solo existe/no existe.
   - *Delete*: `end_question` del propio asker, su desconexión, o el fin de la sesión — todos liberan el floor (`question_floor_free`) y detienen el `SpeechRecognizer`.
+- **Discussion floor** (singleton efímero, un turno a la vez - solo existe mientras `session.status === 'discussion'`, no es una entidad persistida ni parte de `Session`):
+  - *Create*: `request_turn {language}` por WS de **cualquier** conexión autenticada o no (oyente o presentador) — rechaza si `session.status !== 'discussion'`, si `language` no mapea a español/inglés, o si ya hay alguien con la palabra (`turn_denied`); si no, concede (`turn_granted`) y abre un `SpeechRecognizer` en el idioma de quien habla.
+  - *Read*: cada fragmento (interino, forzado por `MAX_INTERIM_DURATION_MS`, o final) se enruta por `displayLanguage` de cada conexión - texto original sin audio para quienes comparten idioma con quien habla; texto traducido + audio para quienes tienen el otro de los dos (es↔en); nada para quienes eligieron otro idioma de los 10 soportados en el resto de la app.
+  - *Update*: no aplica — igual que Question floor, un turno existe o no existe, no se edita.
+  - *Delete*: `end_turn` de quien habla, su desconexión, o `end_discussion`/fin de la sesión — liberan el floor (`turn_floor_free`) y detienen el `SpeechRecognizer`.
+- **`displayLanguage` por conexión** (vive en memoria junto a cada WebSocket - oyente o presentador -, no es una entidad persistida ni parte de `Session`):
+  - *Create*: `set_language {language}` por WS, enviado proactivamente al conectar (oyente) o al entrar a modo discusión (presentador).
+  - *Read*: usado internamente por el Discussion floor para decidir qué variante (propia o traducida) mandarle a cada conexión; no se expone vía ningún GET.
+  - *Update*: reenviar `set_language` sobrescribe el valor (idempotente).
+  - *Delete*: implícito al cerrarse la conexión.
 
 ## Estructura de archivos
 
@@ -182,6 +223,7 @@ echotalk/
       presenterSocket.ts
       listenerSocket.ts
       questionFloor.ts          # turno unico de "pedir la palabra" para preguntas del publico
+      discussionFloor.ts        # turno unico post-presentacion, difunde a TODOS (no solo al presentador)
     routes.ts
     network.ts
     tls.ts                    # genera el certificado autofirmado para el servidor HTTPS
@@ -193,7 +235,7 @@ echotalk/
 
 ## Fuera de alcance (v1)
 
-Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma **de recepción** por oyente individual (el idioma que cada oyente elige al unirse es solo para si pregunta, no cambia en qué idioma recibe la interpretación principal, que sigue siendo uno solo por sesión) · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente · varias preguntas simultáneas (un piso, un asker a la vez) · que la pregunta traducida llegue a la audiencia (solo al presentador).
+Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión simultánea · selección de idioma **de recepción** por oyente individual durante la charla principal (el idioma que cada oyente elige al unirse sigue siendo solo para si pregunta/participa, no cambia en qué idioma recibe la interpretación principal mientras `session.status` es `live`/`paused`, que sigue siendo uno solo por sesión - **durante `discussion` sí hay enrutamiento por idioma de cada oyente, pero limitado a español/inglés**, ver "Modo discusión") · integración real con Teams (solo se deja la puerta arquitectónica abierta) · proveedor local/gratuito implementado (solo la interfaz) · app móvil nativa · acceso remoto fuera de la LAN (el HTTPS que sí existe es solo para el contexto seguro del micrófono dentro de la red local, no para exponer la app a internet) · certificado HTTPS confiable/de una autoridad reconocida (es autofirmado a propósito) · cambio de idioma en caliente · varias preguntas/turnos simultáneos (un piso, un hablante a la vez, tanto en "Preguntas del público" como en "Modo discusión") · que la pregunta traducida llegue a la audiencia durante `live`/`paused` (solo al presentador - en `discussion` sí llega a todos, es el propósito del modo nuevo) · modo discusión en idiomas distintos a español/inglés · cola visible de quién va después a pedir la palabra (ni en Preguntas del público ni en Modo discusión - es estrictamente "el primero que toca el botón, lo tiene") · ida y vuelta entre `discussion` y `live`/`paused` dentro de la misma sesión (son modos mutuamente excluyentes; volver a presentar requiere una sesión nueva).
 
 ## Riesgos y limitaciones conocidas
 
@@ -204,6 +246,9 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 - Un AP doméstico soporta confiablemente ~30-50 clientes; escalar a "un par de cientos" de oyentes requiere un AP de nivel empresarial.
 - iOS Safari puede pausar el audio si el oyente bloquea la pantalla.
 - Nada detiene automáticamente una sesión olvidada salvo la desconexión del presentador.
+- Modo discusión: si un oyente eligió un idioma fuera de español/inglés al unirse, no puede participar ni ver/escuchar nada de la discusión (ni un mensaje explicándolo más allá de que el botón de pedir la palabra no funciona) - limitación aceptada explícitamente, no un descuido.
+- Modo discusión: si el ASR revisa palabras ya entregadas en un fragmento anterior (mismo trade-off que el corte forzado por tiempo de la charla principal), esa corrección se pierde - no se re-traduce ni se re-envía.
+- No hay forma de "saltarse" o forzar la liberación del turno desde el panel si quien lo tiene se queda colgado sin cerrar su pestaña (solo la desconexión real libera el floor) - un moderador no puede quitarle la palabra a alguien a mitad de turno.
 - La voz de las preguntas del público (`#question-player` en el panel del presentador) depende del mismo desbloqueo de autoplay que el audio principal de los oyentes — se intenta "primar" con un play()/pause() síncrono en el submit del login, pero un navegador más estricto podría bloquearla igual; el texto de la pregunta siempre llega de todas formas, con o sin audio.
 
 **Lección de CSS (ya corregida)**: `listen.css` tenía `#join-screen { display: flex; ... }` con un selector de ID, que por especificidad le gana a la regla por defecto del navegador `[hidden] { display: none }` (selector de atributo). Resultado: `el('join-screen').hidden = true` en JS no ocultaba nada - la pantalla de "Unirme" se quedaba visible, apilada encima de la de oyente, dando la impresión de que el botón "no reaccionaba" al unirse. Arreglado con una regla defensiva `[hidden] { display: none !important; }` al inicio de la hoja de estilos, que gana sin importar qué otra regla por ID/clase exista. Lección para cualquier CSS nuevo en este proyecto: nunca poner una propiedad `display` en un selector de ID/clase que compita con el atributo `hidden` de ese mismo elemento.
@@ -213,6 +258,8 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 `npm test` corre la suite (node:test + tsx, sin dependencias extra) sobre todo lo que no requiere credenciales reales ni un navegador: ciclo de vida de `SessionManager` (incluyendo pausar/reanudar), `TranslationPipeline` con un proveedor falso, los wrappers de Google (`translate.ts`/`tts.ts`/`speechStream.ts`, incluyendo el reinicio del stream tras un error) y de ElevenLabs (`elevenlabs/tts.ts`, con `fetch` inyectado) con un cliente/fetch falso, la generación del certificado autofirmado (`tls.ts`), el turno único de preguntas (`questionFloor.ts`: conceder/denegar, traducción, liberación), las rutas REST contra un servidor real en un puerto efímero, y el cableado completo de WebSockets (`app.ts`) incluyendo el ciclo start/pausar/reanudar/detener y el flujo completo de preguntas del público (conceder/denegar/liberar, también al terminar la sesión) de punta a punta **sobre HTTP y sobre HTTPS**. Fuera de alcance de esta suite: el frontend/AudioWorklet (no testeable sin navegador) y el pipeline de audio real contra APIs reales (requiere credenciales y micrófono reales) - ambos cubiertos por la verificación manual de abajo.
 
 **Nota de diseño de tests**: los tests de WebSocket que esperan un mensaje de *broadcast* disparado por la acción de OTRO socket deben registrar ese `waitForMessage` **antes** de disparar la acción (guardar la promesa, disparar, luego esperarla) — si el broadcast no tiene ninguna espera asíncrona de por medio en el servidor, puede llegar y perderse antes de que el test esté escuchando, colgando el test indefinidamente en vez de fallar con un timeout. Ver el comentario sobre `waitForMessage` en `app.test.ts`.
+
+**Pendiente al implementar el modo discusión**: `discussionFloor.test.ts` (unitario, mismo patrón que `questionFloor.test.ts`: fake provider, fake WebSockets, verificar conceder/denegar/traducir/enrutar-por-idioma/liberar) y una extensión de `app.test.ts` (integración, mismo patrón que las pruebas de "audience questions") cubriendo: `start_discussion`/`end_discussion` desde cada estado, que el presentador también tenga que pedir la palabra, que el enrutamiento por idioma entregue la variante correcta a cada conexión (propia vs. traducida), y que el corte forzado por tiempo máximo también aplique dentro de un turno de discusión largo.
 
 ## Verificación end-to-end
 
@@ -228,3 +275,4 @@ Cuentas de usuario · persistencia/historial de transcripciones · multi-sesión
 9. Reconexión de un oyente (modo avión o recarga de pestaña) durante una sesión viva.
 10. PIN incorrecto rechazado sin filtrar información.
 11. **Preguntas del público**: tras hacer login como presentador (confirma que después de unirse, la pantalla de "Unirme" del oyente desaparece de verdad y no queda apilada encima - ver la lección de CSS arriba), en la vista de oyente elegir un idioma distinto al de la charla, tocar "Preguntar", conceder el permiso de micrófono, hablar una pregunta corta. Confirmar que: (a) el botón "Preguntar" se deshabilita en los demás oyentes mientras tanto, (b) la pregunta traducida aparece en el panel del presentador y se **escucha** en voz (no solo texto) y NO en la vista de los demás oyentes, (c) tocar "Terminar pregunta" libera el turno y reactiva el botón para todos, (d) un segundo oyente que intenta preguntar mientras el primero tiene la palabra recibe un mensaje de "otra persona está preguntando".
+12. **Modo discusión**: con al menos 2 oyentes conectados (uno con idioma español, otro con inglés), desde el panel tocar "Iniciar discusión" (probar desde `idle` directamente, sin haber presentado antes). Confirmar: (a) el panel del presentador también muestra el selector de idioma + botón de pedir la palabra, sin micrófono activo por defecto; (b) un oyente en español pide la palabra y habla - el oyente en inglés ve el texto traducido y escucha el audio, mientras un tercer oyente TAMBIÉN en español solo ve el texto original sin audio; (c) mientras alguien tiene la palabra, nadie más (ni el operador) puede pedirla; (d) al terminar el turno, el operador pide la palabra y responde - le llega traducido a los oyentes en inglés igual que a cualquier otro; (e) un oyente con un idioma fuera de español/inglés no puede pedir la palabra ni ve nada de la discusión; (f) alguien habla sin pausar más de `MAX_INTERIM_DURATION_MS` - confirmar que igual se traduce por fragmentos en vez de esperar a que pause; (g) "Terminar discusión" vuelve todo a `idle` y notifica a los oyentes.
