@@ -11,6 +11,15 @@
   box-sizing: border-box;
 }
 
+/* Sin esto, el toggle de .hidden en JS (el('x').hidden = true) no alcanza a
+   ocultar #join-screen: una regla por ID tiene mas especificidad CSS que la
+   regla [hidden]{display:none} del navegador, asi que #join-screen's propio
+   "display: flex" de abajo gana y la pantalla de "Unirme" se queda visible
+   apilada sobre la de oyente despues de unirse. */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;

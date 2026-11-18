@@ -1,5 +1,6 @@
 import type { WebSocket, WebSocketServer } from 'ws';
 import { LISTENER_COUNT_DEBOUNCE_MS } from '../config';
+import type { AudioStore } from '../audioStore';
 import type { SessionManager } from '../sessionManager';
 import type { TranslationProvider } from '../providers/types';
 import type { AudienceQuestion, ListenerToServerMessage, ServerToListenerMessage } from '../types';
@@ -26,9 +27,10 @@ export class ListenerHub {
   constructor(
     private readonly sessionManager: SessionManager,
     provider: TranslationProvider,
+    audioStore: AudioStore,
     events: ListenerHubEvents = {},
   ) {
-    this.questionFloor = new QuestionFloor(sessionManager, provider, {
+    this.questionFloor = new QuestionFloor(sessionManager, provider, audioStore, {
       onFloorBusy: () => this.broadcast({ type: 'question_floor_busy' }),
       onFloorFree: () => this.broadcast({ type: 'question_floor_free' }),
       onQuestion: (question) => events.onAudienceQuestion?.(question),

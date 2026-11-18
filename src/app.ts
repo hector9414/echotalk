@@ -66,7 +66,7 @@ export function buildApp(provider: TranslationProvider, networkInfo: NetworkInfo
   const sessionManager = new SessionManager();
 
   const presenterHub = new PresenterHub();
-  const listenerHub = new ListenerHub(sessionManager, provider, {
+  const listenerHub = new ListenerHub(sessionManager, provider, audioStore, {
     onAudienceQuestion: (question) => presenterHub.broadcast({ type: 'audience_question', question }),
   });
 

@@ -46,6 +46,9 @@ export interface AudienceQuestion {
   sourceText: string;
   sourceLanguageLabel: string;
   translatedText: string;
+  // null si la sintesis de voz fallo - la pregunta en texto se entrega
+  // igual, solo sin audio (ver QuestionFloor.handleFinal).
+  audioUrl: string | null;
 }
 
 // Server -> Presenter

@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { AudioStore } from '../audioStore';
 import { SessionManager } from '../sessionManager';
 import { QuestionFloor } from './questionFloor';
 import type { RecognitionHandlers, SpeechRecognizer, TranslationProvider } from '../providers/types';
@@ -8,9 +9,10 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function makeFakeProvider() {
+function makeFakeProvider(options: { synthesizeShouldFail?: boolean } = {}) {
   let capturedHandlers: RecognitionHandlers | null = null;
   const translateCalls: Array<{ text: string; from: string; to: string }> = [];
+  const synthesizeCalls: Array<{ text: string; languageCode: string }> = [];
   let stopCalls = 0;
 
   const recognizer: SpeechRecognizer = {
@@ -32,8 +34,12 @@ function makeFakeProvider() {
       },
     },
     synthesizer: {
-      async synthesize() {
-        return { buffer: Buffer.from(''), mime: 'audio/mpeg' };
+      async synthesize(text, languageCode) {
+        synthesizeCalls.push({ text, languageCode });
+        if (options.synthesizeShouldFail) {
+          throw new Error('voz no disponible (fake)');
+        }
+        return { buffer: Buffer.from('fake-audio'), mime: 'audio/mpeg' };
       },
     },
   };
@@ -41,6 +47,7 @@ function makeFakeProvider() {
   return {
     provider,
     translateCalls,
+    synthesizeCalls,
     stopCallCount: () => stopCalls,
     emitFinal: (text: string) => capturedHandlers?.onFinal(text),
   };
@@ -52,7 +59,7 @@ describe('QuestionFloor', () => {
   it('rejects a request when no session is active', () => {
     const sm = new SessionManager();
     const fake = makeFakeProvider();
-    const floor = new QuestionFloor(sm, fake.provider);
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore());
     const result = floor.request(fakeWs('a'), 'en-US');
     assert.match(result ?? '', /no hay una sesión activa/i);
     assert.equal(floor.isBusy(), false);
@@ -62,7 +69,7 @@ describe('QuestionFloor', () => {
     const sm = new SessionManager();
     sm.start('es-ES', 'en-US');
     const fake = makeFakeProvider();
-    const floor = new QuestionFloor(sm, fake.provider);
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore());
 
     const first = floor.request(fakeWs('a'), 'en-US');
     assert.equal(first, null);
@@ -76,37 +83,58 @@ describe('QuestionFloor', () => {
     const sm = new SessionManager();
     sm.start('es-ES', 'en-US');
     const fake = makeFakeProvider();
-    const floor = new QuestionFloor(sm, fake.provider);
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore());
 
     const result = floor.request(fakeWs('a'), 'xx-XX');
     assert.match(result ?? '', /idioma válido/i);
     assert.equal(floor.isBusy(), false);
   });
 
-  it('translates a finalized question from the asker language to the presenter language', async () => {
+  it('translates a finalized question, synthesizes it in the presenter language, and stores the clip', async () => {
     const sm = new SessionManager();
     sm.start('es-ES', 'en-US'); // presenter speaks Spanish
     const fake = makeFakeProvider();
-    const questions: unknown[] = [];
-    const floor = new QuestionFloor(sm, fake.provider, { onQuestion: (q) => questions.push(q) });
+    const audioStore = new AudioStore();
+    const questions: Array<{ sourceText: string; sourceLanguageLabel: string; translatedText: string; audioUrl: string | null }> = [];
+    const floor = new QuestionFloor(sm, fake.provider, audioStore, { onQuestion: (q) => questions.push(q) });
 
     floor.request(fakeWs('a'), 'en-US'); // asker speaks English
     fake.emitFinal('what time is it');
     await tick();
 
     assert.deepEqual(fake.translateCalls[0], { text: 'what time is it', from: 'en', to: 'es' });
-    assert.deepEqual(questions[0], {
-      sourceText: 'what time is it',
-      sourceLanguageLabel: 'Inglés (Estados Unidos)',
-      translatedText: '[es] what time is it',
-    });
+    assert.deepEqual(fake.synthesizeCalls[0], { text: '[es] what time is it', languageCode: 'es-ES' });
+
+    const question = questions[0];
+    assert.equal(question.sourceText, 'what time is it');
+    assert.equal(question.sourceLanguageLabel, 'Inglés (Estados Unidos)');
+    assert.equal(question.translatedText, '[es] what time is it');
+    assert.match(question.audioUrl ?? '', /^\/api\/audio\/.+/);
+
+    const audioId = question.audioUrl!.replace('/api/audio/', '');
+    assert.deepEqual(audioStore.get(audioId), { buffer: Buffer.from('fake-audio'), mime: 'audio/mpeg' });
+  });
+
+  it('still delivers the question (with audioUrl null) if voice synthesis fails', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider({ synthesizeShouldFail: true });
+    const questions: Array<{ audioUrl: string | null }> = [];
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore(), { onQuestion: (q) => questions.push(q) });
+
+    floor.request(fakeWs('a'), 'en-US');
+    fake.emitFinal('what time is it');
+    await tick();
+
+    assert.equal(questions.length, 1);
+    assert.equal(questions[0].audioUrl, null);
   });
 
   it('writeAudio only forwards to the recognizer for the current asker', () => {
     const sm = new SessionManager();
     sm.start('es-ES', 'en-US');
     const fake = makeFakeProvider();
-    const floor = new QuestionFloor(sm, fake.provider);
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore());
 
     const asker = fakeWs('asker');
     const stranger = fakeWs('stranger');
@@ -124,7 +152,7 @@ describe('QuestionFloor', () => {
     sm.start('es-ES', 'en-US');
     const fake = makeFakeProvider();
     let freedCount = 0;
-    const floor = new QuestionFloor(sm, fake.provider, { onFloorFree: () => freedCount++ });
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore(), { onFloorFree: () => freedCount++ });
 
     floor.request(fakeWs('a'), 'en-US');
     floor.release();
@@ -140,7 +168,7 @@ describe('QuestionFloor', () => {
     const sm = new SessionManager();
     sm.start('es-ES', 'en-US');
     const fake = makeFakeProvider();
-    const floor = new QuestionFloor(sm, fake.provider);
+    const floor = new QuestionFloor(sm, fake.provider, new AudioStore());
 
     floor.request(fakeWs('a'), 'en-US');
     floor.release();
