@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { getLanguageOption } from '../config';
+import type { AudioStore } from '../audioStore';
 import type { SessionManager } from '../sessionManager';
 import type { LanguageOption } from '../types';
 import type { AudienceQuestion } from '../types';
@@ -25,6 +27,7 @@ export class QuestionFloor {
   constructor(
     private readonly sessionManager: SessionManager,
     private readonly provider: TranslationProvider,
+    private readonly audioStore: AudioStore,
     private readonly events: QuestionFloorEvents = {},
   ) {}
 
@@ -85,11 +88,29 @@ export class QuestionFloor {
     if (!text.trim()) return;
     this.provider.translator
       .translate(text, askerLang.translateCode, presenterLang.translateCode)
-      .then((translatedText) => {
+      .then(async (translatedText) => {
+        // La voz es un plus sobre el texto, no un requisito: si la síntesis
+        // falla, el presentador de todas formas recibe la pregunta traducida
+        // por escrito en vez de perderla por completo.
+        let audioUrl: string | null = null;
+        try {
+          const synthesized = await this.provider.synthesizer.synthesize(
+            translatedText,
+            presenterLang.ttsLanguageCode,
+            presenterLang.ttsVoiceName,
+          );
+          const audioId = randomUUID();
+          this.audioStore.set(audioId, synthesized);
+          audioUrl = `/api/audio/${audioId}`;
+        } catch (err) {
+          console.error('Error sintetizando voz de pregunta del público:', (err as Error).message);
+        }
+
         this.events.onQuestion?.({
           sourceText: text,
           sourceLanguageLabel: askerLang.label,
           translatedText,
+          audioUrl,
         });
       })
       .catch((err: Error) => {

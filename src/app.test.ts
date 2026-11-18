@@ -279,6 +279,7 @@ describe('audience questions', () => {
       assert.equal(received.question.sourceText, 'what time is it');
       assert.equal(received.question.translatedText, '[es] what time is it');
       assert.equal(received.question.sourceLanguageLabel, 'Inglés (Estados Unidos)');
+      assert.match(received.question.audioUrl ?? '', /^\/api\/audio\/.+/);
 
       asker.ws.send(JSON.stringify({ type: 'end_question' }));
       await waitForMessage(asker.ws, (m) => m.type === 'question_floor_free');

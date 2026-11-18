@@ -5,6 +5,9 @@
     audioContext: null,
     workletNode: null,
     micStream: null,
+    questionAudioEl: null,
+    questionQueue: [],
+    questionPlaying: false,
   };
 
   const el = (id) => document.getElementById(id);
@@ -152,6 +155,33 @@
     while (list.children.length > 50) {
       list.removeChild(list.firstChild);
     }
+
+    if (question.audioUrl) enqueueQuestionAudio(question.audioUrl);
+  }
+
+  function enqueueQuestionAudio(url) {
+    state.questionQueue.push(url);
+    if (!state.questionPlaying) playNextQuestionAudio();
+  }
+
+  function playNextQuestionAudio() {
+    const next = state.questionQueue.shift();
+    if (!next) {
+      state.questionPlaying = false;
+      return;
+    }
+    state.questionPlaying = true;
+    state.questionAudioEl.src = next;
+    const playAttempt = state.questionAudioEl.play();
+    if (playAttempt && typeof playAttempt.catch === 'function') {
+      // Si el navegador bloqueó la reproducción automática (ej. nunca se
+      // llegó a loguear, o el bloqueo es más estricto de lo esperado), no
+      // hay forma de forzarlo sin otro gesto del usuario - el presentador
+      // de todas formas ve el texto de la pregunta en pantalla.
+      playAttempt.catch(() => {
+        state.questionPlaying = false;
+      });
+    }
   }
 
   function setStatusMessage(text) {
@@ -168,8 +198,20 @@
     loadNetworkInfo();
   }
 
+  // Best-effort autoplay unlock, igual que en listen.js: un play()/pause()
+  // síncrono dentro de un gesto real del usuario (este submit) es lo que
+  // deja que las reproducciones programáticas futuras de la voz de las
+  // preguntas del público funcionen sin que el presentador tenga que
+  // tocar nada.
+  function primeQuestionAudioPlayback() {
+    const attempt = state.questionAudioEl.play();
+    if (attempt && typeof attempt.catch === 'function') attempt.catch(() => {});
+    state.questionAudioEl.pause();
+  }
+
   async function login(event) {
     event.preventDefault();
+    primeQuestionAudioPlayback();
     const pin = el('pin-input').value.trim();
     showLoginError('');
     try {
@@ -273,6 +315,9 @@
     if (state.workletNode) state.workletNode.port.postMessage('flush');
     state.ws.send(JSON.stringify({ type: 'stop_session' }));
   }
+
+  state.questionAudioEl = el('question-player');
+  state.questionAudioEl.addEventListener('ended', playNextQuestionAudio);
 
   el('login-form').addEventListener('submit', login);
   el('start-button').addEventListener('click', startSession);
