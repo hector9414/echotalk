@@ -62,6 +62,11 @@ export type ServerToPresenterMessage =
   | { type: 'segment_final'; segment: TranscriptSegment }
   | { type: 'stt_status'; status: 'connected' | 'reconnecting' | 'error' }
   | { type: 'audience_question'; question: AudienceQuestion }
+  // Informativo, no automatico: el presentador decide si pausa o sigue
+  // hablando mientras alguien del publico tiene la palabra - ver
+  // "Preguntas del público" en SPEC.md sobre por qué no se pausa solo.
+  | { type: 'question_asking_started' }
+  | { type: 'question_asking_ended' }
   | { type: 'error'; message: string };
 
 // Listener -> Server (JSON control messages; the asker's mic audio is sent

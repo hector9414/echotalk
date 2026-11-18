@@ -78,6 +78,12 @@
       case 'audience_question':
         renderAudienceQuestion(message.question);
         break;
+      case 'question_asking_started':
+        setAskingBanner(true);
+        break;
+      case 'question_asking_ended':
+        setAskingBanner(false);
+        break;
       case 'error':
         setStatusMessage(`Error: ${message.message}`);
         break;
@@ -100,6 +106,7 @@
     if (session.status === 'idle') {
       el('transcript').innerHTML = '';
       el('questions').innerHTML = '';
+      setAskingBanner(false);
     }
 
     if (state.audioContext) {
@@ -186,6 +193,13 @@
 
   function setStatusMessage(text) {
     el('status-message').textContent = text;
+  }
+
+  // Puramente informativo - nunca pausa/reanuda nada solo. El presentador
+  // decide si quiere pausar mientras alguien pregunta o seguir hablando;
+  // ver SPEC.md ("Preguntas del público") sobre por qué no se automatiza.
+  function setAskingBanner(visible) {
+    el('asking-banner').hidden = !visible;
   }
 
   function showLoginError(text) {

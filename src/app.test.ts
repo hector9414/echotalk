@@ -263,7 +263,7 @@ describe('audience questions', () => {
     return presenter;
   }
 
-  it('grants a listener the floor, delivers their translated question to the presenter, then frees it', async () => {
+  it('grants a listener the floor (notifying the presenter), delivers their translated question, then frees it', async () => {
     const fake = makeControllableProvider();
     const test = await startTestServer(fake.provider);
     try {
@@ -271,8 +271,14 @@ describe('audience questions', () => {
       const asker = connect(`${test.wsBaseUrl}/ws/listen`);
       await asker.opened;
 
+      // Registered before triggering the request, same reason as the
+      // comment on waitForMessage: a broadcast fired synchronously by
+      // another socket's action can be missed if the listener is attached
+      // after the fact.
+      const presenterSeesAskingStarted = waitForMessage(presenter.ws, (m) => m.type === 'question_asking_started');
       asker.ws.send(JSON.stringify({ type: 'request_question', language: 'en-US' }));
       await waitForMessage(asker.ws, (m) => m.type === 'question_granted');
+      await presenterSeesAskingStarted;
 
       fake.emitFinal('what time is it');
       const received = await waitForMessage(presenter.ws, (m) => m.type === 'audience_question');
@@ -281,8 +287,10 @@ describe('audience questions', () => {
       assert.equal(received.question.sourceLanguageLabel, 'Inglés (Estados Unidos)');
       assert.match(received.question.audioUrl ?? '', /^\/api\/audio\/.+/);
 
+      const presenterSeesAskingEnded = waitForMessage(presenter.ws, (m) => m.type === 'question_asking_ended');
       asker.ws.send(JSON.stringify({ type: 'end_question' }));
       await waitForMessage(asker.ws, (m) => m.type === 'question_floor_free');
+      await presenterSeesAskingEnded;
 
       presenter.ws.close();
       asker.ws.close();

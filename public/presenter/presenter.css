@@ -129,6 +129,15 @@ button#stop-button {
   color: var(--accent);
 }
 
+.asking-banner {
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: rgba(214, 69, 69, 0.12);
+  border: 1px solid rgba(214, 69, 69, 0.4);
+  color: #ff8a8a;
+  font-size: 0.9rem;
+}
+
 .error {
   color: var(--danger);
   min-height: 1.2em;

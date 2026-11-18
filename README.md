@@ -104,6 +104,8 @@ La audiencia también puede preguntar, con su propia voz, usando su idioma nativ
 3. Mientras alguien tiene la palabra, el botón "Preguntar" se deshabilita para el resto de la audiencia (solo una persona puede preguntar a la vez).
 4. Al tocar **"Terminar"** (o automáticamente, si la sesión se detiene), el texto final de la pregunta se traduce al idioma del presentador y se muestra **únicamente en el panel del presentador** — el resto de la audiencia no la ve ni la escucha.
 
+Mientras alguien tiene la palabra, el presentador ve un banner avisando "Alguien del público está preguntando" — es solo informativo, la app no pausa su micrófono por su cuenta; si quiere, el presentador pausa manualmente con el botón de siempre.
+
 Por eso ahora **toda la audiencia** entra por HTTPS desde el inicio (antes solo era necesario para presentar desde otro dispositivo): cualquiera podría necesitar su micrófono para preguntar, así que todos aceptan la advertencia de certificado al unirse.
 
 ## Seguir escuchando al cambiar de app o minimizar el celular
