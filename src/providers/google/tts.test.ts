@@ -36,6 +36,14 @@ describe('GoogleSpeechSynthesizer', () => {
     assert.equal(request.voice.ssmlGender, undefined);
   });
 
+  it('passes the given speakingRate through to audioConfig, defaulting to TTS_SPEAKING_RATE', async () => {
+    const fake = makeFakeClient(Buffer.from('x'));
+    const synth = new GoogleSpeechSynthesizer(fake.client as any, 1.3);
+    await synth.synthesize('hola', 'es-ES');
+    const request = fake.calls[0] as any;
+    assert.equal(request.audioConfig.speakingRate, 1.3);
+  });
+
   it('defaults to a NEUTRAL voice gender when no specific voice name is given', async () => {
     const fake = makeFakeClient(Buffer.from('x'));
     const synth = new GoogleSpeechSynthesizer(fake.client as any);

@@ -27,6 +27,14 @@ export const ELEVENLABS_VOICE_ID = process.env.ELEVENLABS_VOICE_ID || undefined;
 // GET /v1/models for the exact current model_id string before switching.
 export const ELEVENLABS_MODEL_ID = process.env.ELEVENLABS_MODEL_ID || 'eleven_multilingual_v2';
 
+// Multiplicador de velocidad de la voz sintetizada (1.0 = la velocidad
+// normal de la voz). Un poco mas rapido que lo normal ayuda a que la voz
+// traducida no se vaya quedando atras del orador en vivo. Rangos validos
+// por proveedor: Google 0.25-4.0 (TtsConfig.speakingRate); ElevenLabs
+// ~0.7-1.2 (voice_settings.speed) - confirma el rango vigente en su API
+// antes de irte a un extremo, puede rechazar la request fuera de rango.
+export const TTS_SPEAKING_RATE = Number(process.env.TTS_SPEAKING_RATE ?? 1.15);
+
 // Google Cloud Speech-to-Text caps a single streaming session at 5 minutes.
 // Restart comfortably before that so the replacement stream is warmed up
 // (via the replay buffer) before the old one would be cut off.
@@ -35,6 +43,14 @@ export const STT_REPLAY_BUFFER_MS = 2000;
 
 // Defensive cap so an unusually long session doesn't grow memory forever.
 export const MAX_SEGMENTS_IN_MEMORY = 200;
+
+// El reconocedor de voz solo finaliza un segmento cuando detecta una pausa
+// natural - si el orador habla sin pausas por mas tiempo que esto, el
+// pipeline fuerza la traduccion/sintesis de lo acumulado hasta ahora de
+// todas formas, en vez de esperar indefinidamente (ver TranslationPipeline
+// en pipeline.ts). Bajarlo da subtitulos/voz mas "en vivo" pero corta la
+// frase en fragmentos mas chicos; subirlo espera mas por una pausa real.
+export const MAX_INTERIM_DURATION_MS = Number(process.env.MAX_INTERIM_DURATION_MS ?? 5000);
 
 export const LISTENER_COUNT_DEBOUNCE_MS = 500;
 

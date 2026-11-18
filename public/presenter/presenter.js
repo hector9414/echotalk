@@ -8,6 +8,10 @@
     questionAudioEl: null,
     questionQueue: [],
     questionPlaying: false,
+    micTestStream: null,
+    micTestAudioContext: null,
+    micTestAnalyser: null,
+    micTestRafId: null,
   };
 
   const el = (id) => document.getElementById(id);
@@ -78,6 +82,12 @@
       case 'audience_question':
         renderAudienceQuestion(message.question);
         break;
+      case 'question_asking_started':
+        setAskingBanner(true);
+        break;
+      case 'question_asking_ended':
+        setAskingBanner(false);
+        break;
       case 'error':
         setStatusMessage(`Error: ${message.message}`);
         break;
@@ -96,10 +106,12 @@
     el('stop-button').disabled = session.status === 'idle';
     el('source-language').disabled = session.status !== 'idle';
     el('target-language').disabled = session.status !== 'idle';
+    el('mic-test-button').disabled = session.status !== 'idle';
 
     if (session.status === 'idle') {
       el('transcript').innerHTML = '';
       el('questions').innerHTML = '';
+      setAskingBanner(false);
     }
 
     if (state.audioContext) {
@@ -188,6 +200,13 @@
     el('status-message').textContent = text;
   }
 
+  // Puramente informativo - nunca pausa/reanuda nada solo. El presentador
+  // decide si quiere pausar mientras alguien pregunta o seguir hablando;
+  // ver SPEC.md ("Preguntas del público") sobre por qué no se automatiza.
+  function setAskingBanner(visible) {
+    el('asking-banner').hidden = !visible;
+  }
+
   function showLoginError(text) {
     el('login-error').textContent = text;
   }
@@ -234,8 +253,16 @@
 
   async function ensureAudioPipeline() {
     if (state.audioContext) return;
+    requireMediaDevices();
     state.micStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      // noiseSuppression/autoGainControl deliberately OFF: both can clip the
+      // trailing consonants/vowels of a word as its volume fades out,
+      // mistaking them for background noise - and since that's the same
+      // audio sent to Google STT, the clipped word shows up in the
+      // transcript AND the translated voice, not just locally. echoCancellation
+      // stays on since it's unrelated to this (it's about feedback, not
+      // noise gating) and doesn't cause the same symptom.
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
     });
     state.audioContext = new AudioContext({ sampleRate: 16000 });
     await state.audioContext.audioWorklet.addModule('/shared/pcm-worklet.js');
@@ -286,7 +313,93 @@
     );
   }
 
+  // navigator.mediaDevices es undefined por completo en un contexto no
+  // seguro (ej. una IP de LAN por HTTP plano) - acceder a .getUserMedia ahí
+  // lanza un TypeError genérico, no un SecurityError, así que nunca
+  // llegaba al mensaje ya escrito para ese caso. Esta verificación
+  // explícita lo redirige al mensaje correcto.
+  function requireMediaDevices() {
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      const err = new Error('getUserMedia no está disponible: la página no está en un contexto seguro.');
+      err.name = 'SecurityError';
+      throw err;
+    }
+  }
+
+  // Prueba de micrófono independiente de la sesión real: no usa el
+  // AudioWorklet ni manda nada al servidor, solo muestra el nivel de audio
+  // captado en vivo (vía AnalyserNode) para confirmar que el micrófono
+  // funciona antes de iniciar. Usa los mismos ajustes de getUserMedia que
+  // la sesión real (ver ensureAudioPipeline) para que el nivel mostrado sea
+  // representativo. No hay ningún "umbral" que configurar aquí - Google STT
+  // recibe el audio crudo, sin ningún filtro de sensibilidad propio de esta
+  // app; esto es solo retroalimentación visual.
+  async function toggleMicTest() {
+    if (state.micTestStream) {
+      stopMicTest();
+      return;
+    }
+
+    el('mic-test-error').textContent = '';
+    try {
+      requireMediaDevices();
+      state.micTestStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
+      });
+    } catch (err) {
+      el('mic-test-error').textContent = describeAudioPipelineError(err);
+      return;
+    }
+
+    state.micTestAudioContext = new AudioContext();
+    const source = state.micTestAudioContext.createMediaStreamSource(state.micTestStream);
+    state.micTestAnalyser = state.micTestAudioContext.createAnalyser();
+    state.micTestAnalyser.fftSize = 512;
+    source.connect(state.micTestAnalyser);
+
+    el('mic-test-button').textContent = 'Detener prueba';
+    updateMicMeter();
+  }
+
+  function updateMicMeter() {
+    const data = new Uint8Array(state.micTestAnalyser.fftSize);
+    state.micTestAnalyser.getByteTimeDomainData(data);
+
+    let sumSquares = 0;
+    for (let i = 0; i < data.length; i++) {
+      const normalized = (data[i] - 128) / 128; // -1..1
+      sumSquares += normalized * normalized;
+    }
+    const rms = Math.sqrt(sumSquares / data.length); // ~0 (silencio) .. ~1 (muy fuerte)
+    const level = Math.min(1, rms * 4); // escalado solo para que se note en la barra
+
+    const fill = el('mic-meter-fill');
+    fill.style.width = `${Math.round(level * 100)}%`;
+    fill.style.background = level < 0.5 ? '#4caf7d' : level < 0.8 ? '#e0b32e' : '#d64545';
+
+    state.micTestRafId = requestAnimationFrame(updateMicMeter);
+  }
+
+  function stopMicTest() {
+    if (state.micTestRafId) {
+      cancelAnimationFrame(state.micTestRafId);
+      state.micTestRafId = null;
+    }
+    if (state.micTestAudioContext) {
+      state.micTestAudioContext.close();
+      state.micTestAudioContext = null;
+    }
+    if (state.micTestStream) {
+      state.micTestStream.getTracks().forEach((track) => track.stop());
+      state.micTestStream = null;
+    }
+    state.micTestAnalyser = null;
+    el('mic-meter-fill').style.width = '0%';
+    el('mic-test-button').textContent = 'Probar micrófono';
+  }
+
   async function startSession() {
+    stopMicTest(); // no dejar dos getUserMedia abiertos a la vez
     try {
       await ensureAudioPipeline();
     } catch (err) {
@@ -308,6 +421,19 @@
   }
 
   function resumeSession() {
+    // Resume the mic's AudioContext right here, synchronously inside this
+    // click handler - NOT only reactively from the session_state message in
+    // updateSessionUi(), which runs async from a WebSocket event, not a
+    // user gesture. Some browsers (notably mobile Safari) only honor
+    // AudioContext.resume() when it's called directly from a real user
+    // gesture; calling it later from a message handler can silently fail,
+    // leaving the AudioContext suspended - captured audio stops reaching
+    // the worklet/WebSocket even though the server thinks the session is
+    // live again. This is the most likely explanation for "reanudar deja
+    // de captar audio".
+    if (state.audioContext && state.audioContext.state === 'suspended') {
+      state.audioContext.resume().catch(() => {});
+    }
     state.ws.send(JSON.stringify({ type: 'resume_session' }));
   }
 
@@ -324,6 +450,7 @@
   el('pause-button').addEventListener('click', pauseSession);
   el('resume-button').addEventListener('click', resumeSession);
   el('stop-button').addEventListener('click', stopSession);
+  el('mic-test-button').addEventListener('click', toggleMicTest);
 
   loadLanguages();
 })();

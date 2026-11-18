@@ -21,6 +21,9 @@
 
       <section id="panel-screen" hidden>
         <p id="status-message" class="status-message" role="status"></p>
+        <p id="asking-banner" class="asking-banner" role="status" hidden>
+          🎤 Alguien del público está preguntando - puedes pausar si quieres, o seguir hablando.
+        </p>
 
         <div class="grid">
           <div class="card">
@@ -33,6 +36,15 @@
               Idioma de destino (el que escucha la audiencia)
               <select id="target-language"></select>
             </label>
+
+            <div class="mic-test">
+              <p class="hint">Prueba que el micrófono capte tu voz antes de iniciar (usa los mismos ajustes que la sesión real).</p>
+              <div class="mic-meter-track">
+                <div id="mic-meter-fill" class="mic-meter-fill"></div>
+              </div>
+              <button id="mic-test-button" type="button">Probar micrófono</button>
+              <p id="mic-test-error" class="error" role="alert"></p>
+            </div>
 
             <div class="button-row">
               <button id="start-button" type="button">Iniciar</button>

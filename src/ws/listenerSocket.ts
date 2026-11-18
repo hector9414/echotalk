@@ -8,6 +8,11 @@ import { QuestionFloor } from './questionFloor';
 
 export interface ListenerHubEvents {
   onAudienceQuestion?: (question: AudienceQuestion) => void;
+  // Fired when the floor is granted/freed - purely informational for the
+  // presenter (e.g. a banner), never pauses/resumes anything automatically.
+  // See "Preguntas del público" in SPEC.md for why.
+  onQuestionAskingStarted?: () => void;
+  onQuestionAskingEnded?: () => void;
 }
 
 // Tracks connected listener sockets, broadcasts session/segment updates to
@@ -31,8 +36,14 @@ export class ListenerHub {
     events: ListenerHubEvents = {},
   ) {
     this.questionFloor = new QuestionFloor(sessionManager, provider, audioStore, {
-      onFloorBusy: () => this.broadcast({ type: 'question_floor_busy' }),
-      onFloorFree: () => this.broadcast({ type: 'question_floor_free' }),
+      onFloorBusy: () => {
+        this.broadcast({ type: 'question_floor_busy' });
+        events.onQuestionAskingStarted?.();
+      },
+      onFloorFree: () => {
+        this.broadcast({ type: 'question_floor_free' });
+        events.onQuestionAskingEnded?.();
+      },
       onQuestion: (question) => events.onAudienceQuestion?.(question),
     });
 

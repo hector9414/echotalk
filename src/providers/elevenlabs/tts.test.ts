@@ -22,7 +22,7 @@ describe('ElevenLabsSpeechSynthesizer', () => {
     const audioBytes = new Uint8Array([1, 2, 3]);
     const fake = makeFakeFetch({ ok: true, body: audioBytes });
     const synth = new ElevenLabsSpeechSynthesizer(
-      { apiKey: 'test-key', voiceId: 'voice-123', modelId: 'eleven_multilingual_v2' },
+      { apiKey: 'test-key', voiceId: 'voice-123', modelId: 'eleven_multilingual_v2', speed: 1.15 },
       fake.fetchImpl,
     );
 
@@ -32,10 +32,27 @@ describe('ElevenLabsSpeechSynthesizer', () => {
     assert.equal(fake.calls[0].url, 'https://api.elevenlabs.io/v1/text-to-speech/voice-123');
     assert.equal(fake.calls[0].init.headers['xi-api-key'], 'test-key');
     const body = JSON.parse(fake.calls[0].init.body);
-    assert.deepEqual(body, { text: 'hola mundo', model_id: 'eleven_multilingual_v2' });
+    assert.deepEqual(body, {
+      text: 'hola mundo',
+      model_id: 'eleven_multilingual_v2',
+      voice_settings: { speed: 1.15 },
+    });
 
     assert.equal(result.mime, 'audio/mpeg');
     assert.deepEqual([...result.buffer], [1, 2, 3]);
+  });
+
+  it('defaults voice_settings.speed to TTS_SPEAKING_RATE when no speed is configured', async () => {
+    const fake = makeFakeFetch({ ok: true });
+    const synth = new ElevenLabsSpeechSynthesizer(
+      { apiKey: 'test-key', voiceId: 'voice-123', modelId: 'eleven_multilingual_v2' },
+      fake.fetchImpl,
+    );
+
+    await synth.synthesize('hola', 'es-ES');
+
+    const body = JSON.parse(fake.calls[0].init.body);
+    assert.equal(typeof body.voice_settings.speed, 'number');
   });
 
   it('throws a descriptive error when ElevenLabs responds with a non-OK status', async () => {
