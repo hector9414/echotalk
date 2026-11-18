@@ -1,3 +1,4 @@
+import { TTS_SPEAKING_RATE } from '../../config';
 import type { SpeechSynthesizer, SynthesizedAudio } from '../types';
 
 const ELEVENLABS_API_BASE = 'https://api.elevenlabs.io/v1';
@@ -6,6 +7,10 @@ export interface ElevenLabsConfig {
   apiKey: string;
   voiceId: string;
   modelId: string;
+  // ElevenLabs documents ~0.7-1.2 as the supported range (1.0 = normal) -
+  // see TTS_SPEAKING_RATE in config.ts. Values outside that range are
+  // rejected by their API, not clamped here.
+  speed?: number;
 }
 
 // ElevenLabs' multilingual models infer the spoken language from the text
@@ -31,6 +36,7 @@ export class ElevenLabsSpeechSynthesizer implements SpeechSynthesizer {
       body: JSON.stringify({
         text,
         model_id: this.config.modelId,
+        voice_settings: { speed: this.config.speed ?? TTS_SPEAKING_RATE },
       }),
     });
 

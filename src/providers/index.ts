@@ -1,4 +1,4 @@
-import { ELEVENLABS_API_KEY, ELEVENLABS_MODEL_ID, ELEVENLABS_VOICE_ID } from '../config';
+import { ELEVENLABS_API_KEY, ELEVENLABS_MODEL_ID, ELEVENLABS_VOICE_ID, TTS_SPEAKING_RATE } from '../config';
 import { GoogleSttStreamManager } from './google/speechStream';
 import { GoogleTranslator } from './google/translate';
 import { GoogleSpeechSynthesizer } from './google/tts';
@@ -20,12 +20,13 @@ function createElevenLabsSynthesizer(): SpeechSynthesizer {
     apiKey: ELEVENLABS_API_KEY,
     voiceId: ELEVENLABS_VOICE_ID,
     modelId: ELEVENLABS_MODEL_ID,
+    speed: TTS_SPEAKING_RATE,
   });
 }
 
 function createSynthesizer(ttsProviderName: TtsProviderName): SpeechSynthesizer {
   if (ttsProviderName === 'elevenlabs') return createElevenLabsSynthesizer();
-  return new GoogleSpeechSynthesizer();
+  return new GoogleSpeechSynthesizer(); // picks up TTS_SPEAKING_RATE via its own default
 }
 
 // STT + translation still come from Google (createRecognizer/translator

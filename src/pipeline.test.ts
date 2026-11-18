@@ -9,6 +9,13 @@ function tick(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+// A fake, manually-advanced clock so the maxInterimDurationMs tests don't
+// need real waits - see TranslationPipeline's injectable `now`.
+function makeClock(start = 0) {
+  let value = start;
+  return { now: () => value, advance: (ms: number) => (value += ms) };
+}
+
 function makeFakeProvider() {
   let capturedHandlers: RecognitionHandlers | null = null;
   const writes: Buffer[] = [];
@@ -144,6 +151,97 @@ describe('TranslationPipeline', () => {
     assert.equal(segments.length, 2);
     assert.equal(segments[1].sourceText, 'adios');
     assert.equal(segments[1].isFinal, false);
+  });
+
+  it('forces delivery of accumulated interim text once maxInterimDurationMs elapses without a final result', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    clock.advance(1500); // past the threshold, with no final result in between
+    fake.emitInterim('hola mundo');
+    await tick();
+    await tick();
+
+    assert.equal(fake.translateCalls.length, 1);
+    assert.deepEqual(fake.translateCalls[0], { text: 'hola mundo', from: 'es', to: 'en' });
+
+    const segments = sm.getSegments();
+    assert.equal(segments.length, 1);
+    assert.equal(segments[0].isFinal, true);
+    assert.equal(segments[0].sourceText, 'hola mundo');
+
+    // The recognizer's cumulative text keeps growing - only the part that
+    // wasn't already force-delivered should show up as a new, non-final
+    // segment (this is what keeps a very long, pause-free utterance from
+    // going completely silent for the audience).
+    fake.emitInterim('hola mundo como estas');
+    assert.equal(sm.getSegments().length, 2);
+    assert.equal(sm.getSegments()[1].sourceText.trim(), 'como estas');
+    assert.equal(sm.getSegments()[1].isFinal, false);
+  });
+
+  it('does not leave a stray empty segment when the natural final has no new words beyond an already-forced chunk', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    clock.advance(1500);
+    fake.emitInterim('hola mundo'); // forces delivery of 'hola mundo'
+    await tick();
+    await tick();
+
+    fake.emitFinal('hola mundo'); // same cumulative text - no new words
+    await tick();
+    await tick();
+
+    const segments = sm.getSegments();
+    assert.equal(segments.length, 1);
+    assert.equal(segments[0].isFinal, true);
+    assert.equal(fake.translateCalls.length, 1); // the final did NOT re-translate it
+  });
+
+  it('a natural final after a forced chunk only translates the remaining new words', async () => {
+    const sm = new SessionManager();
+    sm.start('es-ES', 'en-US');
+    const fake = makeFakeProvider();
+    const clock = makeClock();
+    const pipeline = new TranslationPipeline(sm, new AudioStore(), fake.provider, {
+      now: clock.now,
+      maxInterimDurationMs: 1000,
+    });
+    pipeline.start();
+
+    fake.emitInterim('hola');
+    clock.advance(1500);
+    fake.emitInterim('hola mundo'); // forces delivery of 'hola mundo'
+    await tick();
+    await tick();
+
+    fake.emitFinal('hola mundo como estas');
+    await tick();
+    await tick();
+
+    assert.equal(fake.translateCalls.length, 2);
+    assert.equal(fake.translateCalls[1].text.trim(), 'como estas');
+
+    const segments = sm.getSegments();
+    assert.equal(segments.length, 2);
+    assert.equal(segments[1].isFinal, true);
   });
 
   it('writeAudio forwards to the recognizer while live, and drops audio once paused', () => {

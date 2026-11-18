@@ -1,10 +1,14 @@
-import { getLanguageOption, TTS_SAFE_BYTE_LIMIT } from './config';
+import { getLanguageOption, MAX_INTERIM_DURATION_MS, TTS_SAFE_BYTE_LIMIT } from './config';
 import type { AudioStore } from './audioStore';
 import type { SessionManager } from './sessionManager';
 import type { SpeechRecognizer, TranslationProvider } from './providers/types';
 
 export interface PipelineCallbacks {
   onSttStatus?: (status: 'connected' | 'reconnecting' | 'error') => void;
+  // Overridable for tests; defaults to Date.now. Not a real-time knob for
+  // production use.
+  now?: () => number;
+  maxInterimDurationMs?: number;
 }
 
 // Splits text on sentence boundaries if it's close to Google Text-to-Speech's
@@ -34,18 +38,32 @@ export function splitForTts(text: string, byteLimit = TTS_SAFE_BYTE_LIMIT): stri
 // finalized utterance runs translate -> synthesize -> stores the clip ->
 // marks the segment final. Interim results only update the in-progress
 // segment's source text (see SPEC.md: interim results are never translated
-// or synthesized, to avoid re-translating a growing sentence several times a
-// second).
+// or synthesized on their own, to avoid re-translating a growing sentence
+// several times a second) - UNLESS the speaker goes past
+// maxInterimDurationMs without a natural pause, in which case the text
+// accumulated so far is force-delivered anyway (see handleInterim below).
+// Without that safety valve, someone who talks for a long stretch without
+// pausing would hear/see nothing translated until they finally stop.
 export class TranslationPipeline {
   private recognizer: SpeechRecognizer | null = null;
   private currentSegmentId: string | null = null;
+  // How many leading characters of the recognizer's current (cumulative,
+  // within-utterance) text have already been translated/delivered via a
+  // forced chunk - the next chunk only covers text.slice(handledLength).
+  private handledLength = 0;
+  private utteranceStartedAt: number | null = null;
+  private readonly now: () => number;
+  private readonly maxInterimDurationMs: number;
 
   constructor(
     private readonly sessionManager: SessionManager,
     private readonly audioStore: AudioStore,
     private readonly provider: TranslationProvider,
     private readonly callbacks: PipelineCallbacks = {},
-  ) {}
+  ) {
+    this.now = callbacks.now ?? Date.now;
+    this.maxInterimDurationMs = callbacks.maxInterimDurationMs ?? MAX_INTERIM_DURATION_MS;
+  }
 
   start(): void {
     const session = this.sessionManager.getSession();
@@ -55,6 +73,8 @@ export class TranslationPipeline {
     }
 
     this.currentSegmentId = null;
+    this.handledLength = 0;
+    this.utteranceStartedAt = null;
     this.recognizer = this.provider.createRecognizer(sourceLang.sttCode, {
       onInterim: (text) => this.handleInterim(text),
       onFinal: (text) => {
@@ -79,23 +99,53 @@ export class TranslationPipeline {
     this.recognizer?.stop();
     this.recognizer = null;
     this.currentSegmentId = null;
+    this.handledLength = 0;
+    this.utteranceStartedAt = null;
   }
 
   private handleInterim(text: string): void {
     if (!text.trim()) return;
+    if (this.utteranceStartedAt === null) {
+      this.utteranceStartedAt = this.now();
+    }
+
+    const pendingText = text.slice(this.handledLength);
     if (!this.currentSegmentId) {
-      this.currentSegmentId = this.sessionManager.createSegment(text).id;
+      this.currentSegmentId = this.sessionManager.createSegment(pendingText).id;
     } else {
-      this.sessionManager.updateSegmentInterim(this.currentSegmentId, text);
+      this.sessionManager.updateSegmentInterim(this.currentSegmentId, pendingText);
+    }
+
+    if (pendingText.trim() && this.now() - this.utteranceStartedAt >= this.maxInterimDurationMs) {
+      const segmentId = this.currentSegmentId;
+      this.handledLength = text.length;
+      this.currentSegmentId = null; // the next interim/final starts a fresh displayed segment
+      this.utteranceStartedAt = this.now(); // restart the window for the rest of this utterance
+      this.deliver(pendingText, segmentId).catch((err: Error) => {
+        console.error('Error procesando fragmento forzado por pausa larga:', err.message);
+      });
     }
   }
 
   private async handleFinal(text: string): Promise<void> {
-    const initialSegmentId = this.currentSegmentId ?? this.sessionManager.createSegment(text).id;
-    this.currentSegmentId = null; // next interim result starts a new utterance
+    const pendingText = text.slice(this.handledLength);
+    this.handledLength = 0;
+    this.utteranceStartedAt = null;
 
-    if (!text.trim()) return;
+    // Nothing left to deliver - e.g. a forced chunk already covered this
+    // whole utterance and no new words arrived before the natural final.
+    // Don't create a segment just to leave it empty and never finalized.
+    if (!pendingText.trim()) {
+      this.currentSegmentId = null;
+      return;
+    }
 
+    const segmentId = this.currentSegmentId ?? this.sessionManager.createSegment(pendingText).id;
+    this.currentSegmentId = null;
+    await this.deliver(pendingText, segmentId);
+  }
+
+  private async deliver(text: string, initialSegmentId: string): Promise<void> {
     const session = this.sessionManager.getSession();
     const sourceLang = getLanguageOption(session.sourceLanguage);
     const targetLang = getLanguageOption(session.targetLanguage);

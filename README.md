@@ -52,6 +52,15 @@ Si `TTS_PROVIDER=elevenlabs` y falta `ELEVENLABS_API_KEY` o `ELEVENLABS_VOICE_ID
 
 Para volver a Google, pon `TTS_PROVIDER=google` (o bórralo, es el valor por defecto) y reinicia.
 
+## Que la traducción no se quede atrás del orador
+
+Dos ajustes en `.env` para que la interpretación se sienta más "en vivo":
+
+- **`MAX_INTERIM_DURATION_MS`** (default `5000`): si hablas sin pausas por más de este tiempo, la app traduce y narra lo que lleves acumulado hasta ahora de todas formas, en vez de esperar a que detecte una pausa natural. Sin esto, alguien que habla muy corrido puede estar 20+ segundos sin que se traduzca nada. Bajarlo (ej. `3000`) da subtítulos más seguidos, a costa de cortar las frases en fragmentos más chicos.
+- **`TTS_SPEAKING_RATE`** (default `1.15`, o sea 15% más rápido que la voz normal): entre más rápido hable la voz traducida, menos se acumula el audio pendiente en la cola del oyente. Rango válido en Google: `0.25` a `4.0` — `1.2`-`1.3` sigue sonando claro; pasado `1.5` empieza a sonar robótico. Si usas ElevenLabs, el rango soportado es más angosto (`0.7`-`1.2` aprox.).
+
+Para una voz de Google con cadencia naturalmente más ágil (no solo por `speakingRate`), puedes fijar una voz específica por idioma en `src/config.ts` (campo `ttsVoiceName` de `LANGUAGES`, ej. `es-ES-Neural2-B` o `en-US-Neural2-C` — las voces Neural2/Chirp3 suenan más claras que las Standard a velocidades altas). Confirma nombres de voz vigentes en la consola de Google Cloud Text-to-Speech, ya que el catálogo cambia.
+
 ## Correr la app
 
 ```bash

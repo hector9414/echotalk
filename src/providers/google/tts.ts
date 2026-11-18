@@ -1,4 +1,5 @@
 import { TextToSpeechClient } from '@google-cloud/text-to-speech';
+import { TTS_SPEAKING_RATE } from '../../config';
 import type { SpeechSynthesizer, SynthesizedAudio } from '../types';
 
 let sharedClient: TextToSpeechClient | undefined;
@@ -8,11 +9,12 @@ function getTtsClient(): TextToSpeechClient {
 }
 
 export class GoogleSpeechSynthesizer implements SpeechSynthesizer {
-  private readonly client: TextToSpeechClient;
-
-  constructor(client: TextToSpeechClient = getTtsClient()) {
-    this.client = client;
-  }
+  constructor(
+    private readonly client: TextToSpeechClient = getTtsClient(),
+    // Google accepts 0.25-4.0 (1.0 = normal) - see TTS_SPEAKING_RATE in
+    // config.ts for why the default isn't 1.0.
+    private readonly speakingRate: number = TTS_SPEAKING_RATE,
+  ) {}
 
   async synthesize(text: string, languageCode: string, voiceName?: string): Promise<SynthesizedAudio> {
     const [response] = await this.client.synthesizeSpeech({
@@ -22,7 +24,7 @@ export class GoogleSpeechSynthesizer implements SpeechSynthesizer {
         name: voiceName,
         ssmlGender: voiceName ? undefined : 'NEUTRAL',
       },
-      audioConfig: { audioEncoding: 'MP3' },
+      audioConfig: { audioEncoding: 'MP3', speakingRate: this.speakingRate },
     });
 
     if (!response.audioContent) {
