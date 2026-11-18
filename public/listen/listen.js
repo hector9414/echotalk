@@ -46,17 +46,83 @@
     }
     state.audioEl.pause();
 
+    setupMediaSession();
+    document.addEventListener('visibilitychange', onVisibilityChange);
     connectWebSocket();
   }
+
+  // Registers the live translation as "now playing" media with the OS. On
+  // mobile Chrome/Android this is what keeps the audio (and the tab itself)
+  // running when the browser is minimized or you switch apps - without it,
+  // a backgrounded tab is treated as idle and gets suspended, which is why
+  // leaving Chrome used to kill the session. iOS Safari's support is more
+  // limited, but this plus the WebSocket auto-reconnect below (so the app
+  // resumes itself instead of needing a manual reload) is the standard,
+  // broadly-supported way to do this on the web - a true floating
+  // Picture-in-Picture window is a separate, heavier addition on top of
+  // this (needs a <video> element with a generated visual, since browsers
+  // don't offer PiP for audio-only elements).
+  function setupMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'EchoTalk',
+      artist: 'Traducción en vivo',
+    });
+    navigator.mediaSession.setActionHandler('play', () => {
+      state.audioEl.play().catch(() => {});
+    });
+    navigator.mediaSession.setActionHandler('pause', () => {
+      state.audioEl.pause();
+    });
+  }
+
+  function setMediaSessionPlaybackState(playing) {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+    }
+  }
+
+  // When you come back to the tab (switch apps, unlock the phone) after the
+  // connection dropped while backgrounded, reconnect right away instead of
+  // waiting out the backoff delay below.
+  function onVisibilityChange() {
+    if (document.visibilityState === 'visible' && (!state.ws || state.ws.readyState === WebSocket.CLOSED)) {
+      reconnectAttempts = 0;
+      connectWebSocket();
+    }
+  }
+
+  let reconnectAttempts = 0;
+  let reconnectTimer = null;
 
   function connectWebSocket() {
     const protocol = location.protocol === 'https:' ? 'wss' : 'ws';
     const ws = new WebSocket(`${protocol}://${location.host}/ws/listen`);
+    ws.addEventListener('open', () => {
+      reconnectAttempts = 0;
+    });
     ws.addEventListener('message', (event) => handleServerMessage(JSON.parse(event.data)));
     ws.addEventListener('close', () => {
-      setStatusText('Se perdió la conexión. Intenta recargar la página.');
+      state.ws = null;
+      scheduleReconnect();
     });
     state.ws = ws;
+  }
+
+  // Exponential backoff (1s, 2s, 4s, capped at 8s) instead of a dead "reload
+  // the page" message - covers both a background-tab suspension and an
+  // ordinary network blip. The session itself has no history to replay (see
+  // SPEC.md), so reconnecting just resumes receiving new segments/audio as
+  // normal; it doesn't try to recover anything that was missed.
+  function scheduleReconnect() {
+    if (reconnectTimer) return;
+    setStatusText('Se perdió la conexión. Reconectando...');
+    const delay = Math.min(1000 * 2 ** reconnectAttempts, 8000);
+    reconnectAttempts++;
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      connectWebSocket();
+    }, delay);
   }
 
   function handleServerMessage(message) {
@@ -130,9 +196,11 @@
     const next = state.queue.shift();
     if (!next) {
       state.playing = false;
+      setMediaSessionPlaybackState(false);
       return;
     }
     state.playing = true;
+    setMediaSessionPlaybackState(true);
     state.audioEl.src = next;
     const playAttempt = state.audioEl.play();
     if (playAttempt && typeof playAttempt.catch === 'function') {
@@ -171,7 +239,10 @@
 
   async function ensureQuestionAudioPipeline() {
     state.questionMicStream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      // Same reasoning as presenter.js's mic capture: noiseSuppression/
+      // autoGainControl can clip the tail of a word, which then shows up
+      // both in the recognized text and the translated voice.
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: false, autoGainControl: false },
     });
     state.questionAudioContext = new AudioContext({ sampleRate: 16000 });
     await state.questionAudioContext.audioWorklet.addModule('/shared/pcm-worklet.js');

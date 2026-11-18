@@ -106,6 +106,15 @@ La audiencia también puede preguntar, con su propia voz, usando su idioma nativ
 
 Por eso ahora **toda la audiencia** entra por HTTPS desde el inicio (antes solo era necesario para presentar desde otro dispositivo): cualquiera podría necesitar su micrófono para preguntar, así que todos aceptan la advertencia de certificado al unirse.
 
+## Seguir escuchando al cambiar de app o minimizar el celular
+
+Los navegadores móviles suspenden una pestaña en segundo plano salvo que reconozcan que está reproduciendo audio activamente. Para que la interpretación no se corte al minimizar Chrome o cambiar de app:
+
+- La vista de oyente registra la sesión como "reproduciendo ahora" ante el sistema (Media Session API) — deberías ver un control de reproducción en la pantalla de bloqueo/notificaciones con el nombre "EchoTalk", igual que con Spotify o YouTube Music. Esto es lo que mantiene el audio sonando en segundo plano en Android Chrome. El soporte en iOS Safari es más limitado.
+- Si la conexión sí se cae (la pestaña se suspendió del todo, o hay un corte de red), la app reconecta sola — con reintentos automáticos, y de inmediato al volver a la pestaña/app — en vez de quedarse con un mensaje de "recarga la página". No hay historial que recuperar: al reconectar vuelves a recibir subtítulos/audio nuevos desde ese momento, no lo que te perdiste mientras estuvo desconectado.
+
+No existe una ventana flotante de Picture-in-Picture como la de video — los navegadores no ofrecen esa API para audio — pero lo anterior cubre la necesidad real (que el audio no se corte al salir de la app).
+
 ## Integración con Microsoft Teams (manual)
 
 No hay una integración nativa con Teams todavía (ver "Fuera de alcance" en [SPEC.md](./SPEC.md)). La forma de usarlo hoy es enrutando el audio a nivel de sistema operativo:
@@ -134,4 +143,4 @@ Corre la suite (`node:test`, sin dependencias extra) sobre toda la lógica que n
 
 ## Limitaciones conocidas
 
-Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración nativa con Microsoft Teams (solo enrutamiento manual de audio, ver arriba). Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
+Sin cuentas de usuario, sin historial guardado, un solo idioma de destino por sesión, sin integración nativa con Microsoft Teams (solo enrutamiento manual de audio, ver arriba), sin ventana flotante de Picture-in-Picture (los navegadores no la ofrecen para audio - ver "Seguir escuchando..." arriba). Ver la sección "Fuera de alcance" y "Riesgos y limitaciones conocidas" en [SPEC.md](./SPEC.md) para el detalle completo.
