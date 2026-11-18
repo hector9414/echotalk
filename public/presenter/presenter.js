@@ -315,6 +315,19 @@
   }
 
   function resumeSession() {
+    // Resume the mic's AudioContext right here, synchronously inside this
+    // click handler - NOT only reactively from the session_state message in
+    // updateSessionUi(), which runs async from a WebSocket event, not a
+    // user gesture. Some browsers (notably mobile Safari) only honor
+    // AudioContext.resume() when it's called directly from a real user
+    // gesture; calling it later from a message handler can silently fail,
+    // leaving the AudioContext suspended - captured audio stops reaching
+    // the worklet/WebSocket even though the server thinks the session is
+    // live again. This is the most likely explanation for "reanudar deja
+    // de captar audio".
+    if (state.audioContext && state.audioContext.state === 'suspended') {
+      state.audioContext.resume().catch(() => {});
+    }
     state.ws.send(JSON.stringify({ type: 'resume_session' }));
   }
 

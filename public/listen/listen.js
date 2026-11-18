@@ -129,6 +129,7 @@
     switch (message.type) {
       case 'session_state':
         setStatusText(SESSION_STATUS_LABEL[message.session.status] || message.session.status);
+        setLiveBadge(message.session.status === 'live');
         break;
       case 'segment_update':
         renderCaptionLine(message.segment);
@@ -139,6 +140,7 @@
         break;
       case 'session_ended':
         setStatusText('La sesión terminó. Gracias por escuchar.');
+        setLiveBadge(false);
         break;
       case 'question_granted':
         setAskingUi(true);
@@ -167,7 +169,11 @@
   }
 
   function setStatusText(text) {
-    el('session-status').textContent = text;
+    el('session-status-text').textContent = text;
+  }
+
+  function setLiveBadge(isLive) {
+    el('live-badge').hidden = !isLive;
   }
 
   function renderCaptionLine(segment) {
